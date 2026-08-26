@@ -15,7 +15,6 @@ This module provides:
 """
 
 import copy
-from decimal import Decimal, InvalidOperation
 from hermes_cli.cli_output import line_input
 import json
 import logging
@@ -140,12 +139,6 @@ def _warn_config_parse_failure(
             f"Failed to parse {config_path}: {exc}. "
             f"Keeping the previously loaded config for this process — "
             f"edits to config.yaml are being IGNORED until the YAML is fixed."
-        )
-    elif fallback == "refuse-write":
-        msg = (
-            f"Failed to parse {config_path}: {exc}. "
-            f"REFUSING to write config.yaml so the existing file is preserved. "
-            f"Fix the YAML (hermes config edit) and retry."
         )
     else:
         msg = (
@@ -412,7 +405,7 @@ def get_managed_system() -> Optional[str]:
         # names the system that manages the install.
         if managed_marker.exists():
             try:
-                marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
+                marker = managed_marker.read_text(encoding="utf-8-sig", errors="replace").strip().lower()
             except OSError:
                 marker = ""
 
@@ -526,7 +519,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
 
     # 1. Code-scoped stamp — authoritative, immune to shared $HERMES_HOME.
     try:
-        method = (root / ".install_method").read_text(encoding="utf-8").strip().lower()
+        method = (root / ".install_method").read_text(encoding="utf-8-sig").strip().lower()
         if method in supported_methods:
             return method
     except OSError:
@@ -539,7 +532,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     try:
         method = (
             (get_hermes_home() / ".install_method")
-            .read_text(encoding="utf-8")
+            .read_text(encoding="utf-8-sig")
             .strip()
             .lower()
         )
@@ -571,7 +564,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     # detect git repo installs from worktrees
     if git_path.is_file():
         try:
-            content = git_path.read_text(encoding="utf-8").strip()
+            content = git_path.read_text(encoding="utf-8-sig").strip()
             if content.startswith("gitdir:"):
                 return "git"
         except OSError:
@@ -736,7 +729,7 @@ def get_container_exec_info() -> Optional[dict]:
 
     try:
         info = {}
-        with open(container_mode_file, "r", encoding="utf-8") as f:
+        with open(container_mode_file, "r", encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
@@ -886,7 +879,7 @@ def _is_container() -> bool:
         return True
     # LXC / cgroup-based detection
     try:
-        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
+        with open("/proc/1/cgroup", "r", encoding="utf-8-sig") as f:
             cgroup_content = f.read()
         if "docker" in cgroup_content or "lxc" in cgroup_content or "kubepods" in cgroup_content:
             return True
@@ -924,7 +917,7 @@ def _ensure_default_soul_md(home: Path) -> None:
     soul_path = home / "SOUL.md"
     if soul_path.exists():
         try:
-            existing = soul_path.read_text(encoding="utf-8")
+            existing = soul_path.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             return
         if not is_legacy_template_soul(existing):
@@ -1982,7 +1975,7 @@ def _raw_config_has_explicit_version() -> bool:
     if not config_path.exists():
         return False
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             raw = fast_safe_load(f) or {}
     except Exception:
         return False
@@ -2007,7 +2000,7 @@ def check_config_version() -> Tuple[int, int]:
         return latest, latest
 
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             config = fast_safe_load(f) or {}
     except Exception as e:
         # Invalid YAML needs a parse warning, not an automatic schema rewrite
@@ -3308,7 +3301,7 @@ def read_raw_config() -> Dict[str, Any]:
             return copy.deepcopy(cached[2])
 
         try:
-            with open(config_path, encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8-sig") as f:
                 data = fast_safe_load(f) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
@@ -3362,7 +3355,7 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
     if config_path is None:
         config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             data = fast_safe_load(f) or {}
     except FileNotFoundError:
         return {}
@@ -3398,7 +3391,7 @@ def read_raw_config_readonly() -> Dict[str, Any]:
             return cached[2]
 
         try:
-            with open(config_path, encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8-sig") as f:
                 data = fast_safe_load(f) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
@@ -3414,33 +3407,14 @@ def read_raw_config_readonly() -> Dict[str, Any]:
         return cached_copy
 
 
-def require_readable_config_before_write(
-    config_path: Optional[Path] = None,
-) -> Dict[str, Any]:
-    """Refuse to replace an existing config.yaml that cannot be read or parsed.
-
-    Guards two collapse-to-empty failure modes that would otherwise let a
-    read-then-write caller silently wipe user overrides:
-
-    1. **Unreadable** (permissions / broken mount) - byte open fails.
-    2. **Unparseable or non-mapping** - YAML load raises, or the root is a
-       list/scalar. ``read_user_config_raw()`` / bare ``except`` loaders treat
-       both as ``{}``, so a subsequent write would replace the recoverable
-       file with only the caller's partial dict.
-
-    Returns the loaded mapping (or ``{}`` for a missing / empty / null
-    document) so mutation callers can skip a second parse. A valid empty
-    mapping (``{}``) is allowed through so first-time installs and
-    intentional empty configs still work. On parse failure this also
-    snapshots a ``.corrupt.*.bak`` via :func:`_warn_config_parse_failure`
-    before raising.
-    """
+def require_readable_config_before_write(config_path: Optional[Path] = None) -> None:
+    """Refuse to replace an existing config.yaml that cannot be read."""
     if config_path is None:
         config_path = get_config_path()
     try:
         config_path.stat()
     except FileNotFoundError:
-        return {}
+        return
     except OSError as exc:
         raise RuntimeError(
             f"Refusing to overwrite {config_path}: existing config.yaml cannot be accessed "
@@ -3456,47 +3430,6 @@ def require_readable_config_before_write(
             f"({exc}). Fix the file permissions or move it aside first."
         ) from exc
 
-    return _load_user_config_for_mutation(config_path)
-
-
-def _load_user_config_for_mutation(config_path: Path) -> Dict[str, Any]:
-    """Load raw user config for a fail-closed mutation path.
-
-    Fail closed on parse / non-mapping (no bare-except to ``{}`` collapse).
-    Used by :func:`require_readable_config_before_write` and any caller that
-    must re-validate after other work. Distinct from
-    :func:`read_user_config_raw`, which collapses non-dict roots to ``{}``.
-    """
-    if not config_path.exists():
-        return {}
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            loaded = fast_safe_load(f)
-    except OSError as exc:
-        raise RuntimeError(
-            f"Refusing to overwrite {config_path}: existing config.yaml cannot be read "
-            f"({exc}). Fix the file permissions or move it aside first."
-        ) from exc
-    except Exception as exc:
-        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
-        raise RuntimeError(
-            f"Refusing to overwrite {config_path}: existing config.yaml is not valid YAML "
-            f"({exc}). Fix the file or restore from a .corrupt.*.bak backup first."
-        ) from exc
-    if loaded is None:
-        return {}
-    if not isinstance(loaded, dict):
-        exc = TypeError(
-            f"top-level YAML must be a mapping, got {type(loaded).__name__}"
-        )
-        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
-        raise RuntimeError(
-            f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, "
-            f"got {type(loaded).__name__}. Fix the file or restore from a "
-            f".corrupt.*.bak backup first."
-        ) from exc
-    return loaded
-
 
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """Fail-closed atomic write for ``config.yaml``.
@@ -3506,13 +3439,12 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     :func:`require_readable_config_before_write` first, so a full-file
     replacement can never silently clobber an existing ``config.yaml`` that
     degraded to an empty dict on read (permission error, broken mount,
-    transient I/O, unparseable YAML, or a non-mapping root). New-file
-    creation still works when the path is absent.
+    transient I/O). New-file creation still works when the path is absent.
 
-    Root cause this guards: ``read_user_config_raw()`` returns ``{}`` for an
-    absent file / unreadable path edge cases and collapses non-dict roots.
-    Callers that read then overwrite can't tell these apart, so a broken
-    config would be replaced with only defaults or the single edited section. Routing every
+    Root cause this guards: ``read_raw_config()`` returns ``{}`` for BOTH an
+    absent file and an unreadable-but-present file. Callers that read then
+    overwrite can't tell the two apart, so an unreadable config would be
+    replaced with only defaults or the single edited section. Routing every
     write through this helper enforces the invariant in one place rather than
     relying on each of ~15 independent write sites to remember the guard.
 
@@ -3791,7 +3723,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         if user_sig is not None:
             try:
-                with open(config_path, encoding="utf-8") as f:
+                with open(config_path, encoding="utf-8-sig") as f:
                     user_config = fast_safe_load(f) or {}
 
                 if "max_turns" in user_config:
@@ -5502,12 +5434,7 @@ def _coerce_int(value: str):
 
 
 def _coerce_float(value: str):
-    """Return ``float(value)`` when conversion preserves its decimal value.
-
-    Decimal-looking identifiers can be much more precise than a binary float.
-    Silently rounding one here corrupts it before it reaches ``config.yaml``,
-    so values that do not round-trip through ``float`` remain strings.
-    """
+    """Return float(value) for a clean float literal, else None."""
     try:
         f = float(value)
     except (TypeError, ValueError):
@@ -5515,11 +5442,6 @@ def _coerce_float(value: str):
     # Reject NaN/inf spellings — they are almost never intended config values
     # and round-trip confusingly through YAML.
     if f != f or f in (float("inf"), float("-inf")):
-        return None
-    try:
-        if Decimal(value) != Decimal(str(f)):
-            return None
-    except InvalidOperation:
         return None
     return f
 
@@ -5595,9 +5517,21 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Read the raw user config (not merged with defaults) to avoid
     # dumping all default values back to the file
     config_path = get_config_path()
-    # Fail-closed parse via require_readable (unparseable / non-mapping
-    # refuse-write); returns the mapping so we do not re-parse / collapse.
-    user_config = require_readable_config_before_write(config_path)
+    require_readable_config_before_write(config_path)
+    user_config = {}
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8-sig") as f:
+                user_config = fast_safe_load(f) or {}
+        except Exception as exc:
+            print(
+                f"✗ Cannot parse {config_path}: {exc}\n"
+                f"  The file contains a YAML syntax error. Fix the error\n"
+                f"  in your config file first, then retry.\n"
+                f"  (hermes config edit will open it in your editor.)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
@@ -5841,9 +5775,21 @@ def unset_config_value(key: str):
         return
 
     config_path = get_config_path()
-    # Fail-closed parse via require_readable (unparseable / non-mapping
-    # refuse-write); returns the mapping so we do not re-parse / collapse.
-    user_config = require_readable_config_before_write(config_path)
+    require_readable_config_before_write(config_path)
+    user_config = {}
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8-sig") as f:
+                user_config = fast_safe_load(f) or {}
+        except Exception as exc:
+            print(
+                f"✗ Cannot parse {config_path}: {exc}\n"
+                f"  The file contains a YAML syntax error. Fix the error\n"
+                f"  in your config file first, then retry.\n"
+                f"  (hermes config edit will open it in your editor.)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     removed = _unset_nested(user_config, key)
 
@@ -5903,13 +5849,7 @@ def config_command(args):
             print("  --force: skip the unknown-key notice for unrecognized keys,")
             print("           and allow a scalar to replace a whole mapping section")
             sys.exit(1)
-        try:
-            set_config_value(key, value, force=force)
-        except RuntimeError as exc:
-            # Fail-closed write guard (unparseable / non-mapping / unreadable
-            # config.yaml). Surface a clean CLI error instead of a traceback.
-            print(f"✗ {exc}", file=sys.stderr)
-            sys.exit(1)
+        set_config_value(key, value, force=force)
 
     elif subcmd == "unset":
         key = getattr(args, 'key', None)
@@ -5921,12 +5861,7 @@ def config_command(args):
             print("  hermes config unset terminal.backend")
             print("  hermes config unset OPENROUTER_API_KEY")
             sys.exit(1)
-        try:
-            unset_config_value(key)
-        except RuntimeError as exc:
-            # Same fail-closed guard surface as `config set` above.
-            print(f"✗ {exc}", file=sys.stderr)
-            sys.exit(1)
+        unset_config_value(key)
     
     elif subcmd == "path":
         print(get_config_path())
@@ -6137,7 +6072,7 @@ def _inject_platform_plugin_env_vars() -> None:
             if not manifest_path.exists():
                 continue
             try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
+                with open(manifest_path, "r", encoding="utf-8-sig") as f:
                     manifest = fast_safe_load(f) or {}
             except Exception:
                 continue

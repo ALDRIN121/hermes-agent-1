@@ -254,7 +254,7 @@ def _cua_no_overlay() -> bool:
     if not os.environ.get("DISPLAY"):
         return True
     try:
-        with open("/proc/version", encoding="utf-8") as f:
+        with open("/proc/version", encoding="utf-8-sig") as f:
             if "microsoft" in f.read().lower():
                 return True
     except Exception:
@@ -349,7 +349,7 @@ def _manifest_is_mode_independent(path: str) -> bool:
     try:
         import yaml
 
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8-sig") as handle:
             parsed = yaml.safe_load(handle)
     except Exception:
         logger.debug("could not read capability manifest %s", path, exc_info=True)
