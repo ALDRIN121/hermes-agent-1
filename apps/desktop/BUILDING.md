@@ -79,10 +79,11 @@ AZURE_CLIENT_ID         (the OIDC app id)
 `electron-builder.config.cjs` reads these variables and composes the
 `win.sign` configuration itself. Do not pass the values as `-c` arguments:
 the publisher name contains spaces, and spaces do not survive the cmd.exe
-argument hop. Signing runs through `scripts/sign-cached.mjs`, a
-content-addressed cache keyed on the runtime pins, so rebuilds of
-byte-identical inputs reuse yesterday's signature instead of a remote
-signing round-trip.
+argument hop. Signing runs through `scripts/sign-msix.mjs`, a plain hook
+that signs ONLY the .msix package: Windows validates the package signature
+(AppxSignature.p7x over AppxBlockMap.xml), and inner binaries are covered
+by the block-map hashes — per-file Authenticode is neither required nor
+validated.
 
 On win32, `scripts/after-pack.mjs` runs `sanitize-pe-signatures.mjs` before
 the MSIX pack: python-build-standalone's `llvm-strip` can leave dangling PE

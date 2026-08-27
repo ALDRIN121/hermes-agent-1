@@ -1,22 +1,12 @@
-// electron-builder custom win.sign hook: Azure Trusted Signing behind a
-// content-addressed cache. Signing is the slowest, flakiest part of the
-// Windows release build — every file is a remote round-trip — and rebuilds
-// of unchanged inputs produce byte-identical unsigned binaries. Keyed by the
-// unsigned content hash, a rebuild reuses yesterday's signature instead of
-// re-signing (Authenticode signatures embed a timestamp, not an expiry tied
-// to the build, so replaying a previously signed copy is exactly as valid).
-//
-// ONLY the MSIX package is signed. Windows install validation checks the
-// package signature (AppxSignature.p7x over AppxBlockMap.xml); inner files
-// are covered by the block-map hashes, NOT per-file Authenticode, so
-// signing Hermes.exe or any payload binary is wasted remote round-trips —
-// and signing one AFTER makeappx packs it would change its bytes and break
-// the block hash (0x80080205). electron-builder asks the hook to sign the
-// app exe and the .msix artifact alike; shouldSignFile() admits only the
-// latter.
+// electron-builder custom win.sign hook: Azure Trusted Signing for the MSIX
+// package only. Windows install validation checks the package signature
+// (AppxSignature.p7x over AppxBlockMap.xml); inner files are covered by the
+// block-map hashes, NOT per-file Authenticode, so Hermes.exe and every
+// payload binary stay unsigned and this hook signs exactly one artifact per
+// build.
 //
 // Wired from electron-builder.config.cjs as
-//   win.sign = { type: 'signtool', sign: './scripts/sign-cached.mjs', ... }
+//   win.sign = { type: 'signtool', sign: './scripts/sign-msix.mjs', ... }
 // The Azure endpoint/account/profile do NOT ride through the config: this
 // module reads the AZURE_SIGN_* environment variables directly
 // (azureConfigFromEnv) and hands them to app-builder-lib's own
@@ -26,12 +16,9 @@
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-
-import { contentHash, lookupSigned, storeSigned } from './sign-cache.mjs'
+import { pathToFileURL } from 'node:url'
 
 const require = createRequire(import.meta.url)
-const desktopDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
 // Artifacts that carry the only signature Windows validates for a packaged
 // app. A .msixbundle envelope is included for the single-invocation bundle
@@ -49,16 +36,6 @@ export function shouldSignFile(file) {
 }
 
 /**
- * Cache directory: HERMES_SIGN_CACHE (CI points this at a persisted
- * actions/cache path) or apps/desktop/build/sign-cache for local builds.
- *
- * @param {NodeJS.ProcessEnv} [env]
- */
-export function resolveCacheDir(env = process.env) {
-  return env.HERMES_SIGN_CACHE || path.join(desktopDir, 'build', 'sign-cache')
-}
-
-/**
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {{ type: 'azure' } & Record<string, string | undefined>} the
  *   win.sign azure configuration, composed from the environment.
@@ -73,34 +50,12 @@ export function azureConfigFromEnv(env = process.env) {
   }
 }
 
-/**
- * Sign `file` in place via `signer()`, unless the cache already holds a
- * signed copy for its current (unsigned) content.
- *
- * @param {string} file path to the binary electron-builder wants signed
- * @param {string} cacheDir content-addressed store directory
- * @param {() => Promise<unknown>} signer signs `file` in place
- */
-export async function signWithCache(file, cacheDir, signer) {
-  const key = contentHash(fs.readFileSync(file))
-  const name = path.basename(file)
-  const hit = lookupSigned(cacheDir, key)
-  if (hit) {
-    fs.copyFileSync(hit, file)
-    console.log(`[sign-cached] cache hit ${name} (${key.slice(0, 12)})`)
-    return
-  }
-  await signer()
-  storeSigned(cacheDir, key, fs.readFileSync(file))
-  console.log(`[sign-cached] signed + stored ${name} (${key.slice(0, 12)})`)
-}
-
 // app-builder-lib's exports map exposes only "." and "./internal";
 // import('app-builder-lib/dist/...') throws ERR_PACKAGE_PATH_NOT_EXPORTED.
 // Resolve the class the way run-electron-builder.mjs finds the CLI: resolve
 // the entry module, walk up to the package root, then direct-file import
 // (file URLs bypass the exports map). The constructibility of this class is
-// pinned by the tripwire test in sign-cached.test.mjs, so a builder bump
+// pinned by the tripwire test in sign-msix.test.mjs, so a builder bump
 // that moves it fails js-tests instead of a release build.
 async function loadAzureManagerClass() {
   const entry = require.resolve('app-builder-lib')
@@ -152,14 +107,12 @@ function azureManager(packager) {
  */
 export default async function sign(configuration, packager) {
   if (!shouldSignFile(configuration.path)) {
-    console.log(`[sign-cached] skip non-MSIX (covered by package block map): ${configuration.path}`)
+    console.log(`[sign-msix] skip non-MSIX (covered by package block map): ${configuration.path}`)
     return
   }
 
   const mgr = await azureManager(packager)
-  await signWithCache(configuration.path, resolveCacheDir(), () =>
-    // signFileWithDlib reads only options.path (plus the manager's own
-    // signing config), so platformOptions is sufficient here.
-    mgr.signFile({ path: configuration.path, options: packager.platformOptions })
-  )
+  // signFileWithDlib reads only options.path (plus the manager's own
+  // signing config), so platformOptions is sufficient here.
+  await mgr.signFile({ path: configuration.path, options: packager.platformOptions })
 }
