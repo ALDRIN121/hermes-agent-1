@@ -214,7 +214,7 @@ def test_runtime_install_rejects_impossible_combo(client, monkeypatch):
     resolver's honest message — not a background job that dies silently.
     (win-arm64-vulkan; the old cuda case became real upstream at ~b1036x.)"""
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries._host_os_arch", lambda: ("win", "arm64"))
+        "pm.store.current_target", lambda: "win32-arm64")
     r = client.post("/api/local-models/runtime/install", json={"backend": "vulkan"})
     assert r.status_code == 400
     assert "arm64" in r.json()["detail"]

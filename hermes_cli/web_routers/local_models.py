@@ -231,17 +231,18 @@ def _models_dir() -> Path:
 
 
 def _engine_too_old(min_engine: str) -> bool:
-    """True when the installed llama.cpp predates a model's requirement.
-    Tags are release numbers (b10362); no engine installed compares as
-    too old only when the model states a requirement."""
+    """True when the pinned llama.cpp predates a model's requirement.
+    Tags are release numbers (b10362); the lockfile is the one version
+    authority, so this compares against the pin, not against config."""
     if not min_engine:
         return False
     try:
-        from hermes_cli.local_runtime.binaries import default_tag, installed_tags
+        from hermes_cli.local_runtime.binaries import engine_version
 
-        tags = installed_tags() or [default_tag()]
-        newest = max(int(t.lstrip("b")) for t in tags if t.lstrip("b").isdigit())
-        return newest < int(min_engine.lstrip("b"))
+        pinned = (engine_version() or "").lstrip("b")
+        if not pinned.isdigit():
+            return False
+        return int(pinned) < int(min_engine.lstrip("b"))
     except Exception:  # noqa: BLE001
         return False
 
@@ -268,39 +269,28 @@ async def local_models_status():
     config state + installed runtime + staged models + supervisor state.
     GPU facts come from /api/local-models/hardware (slower, polled)."""
     from hermes_cli.local_runtime.binaries import (
-        default_tag,
-        installed_tags,
-        runtimes_root,
-        server_binary,
+        engine_update_pending,
+        engine_version,
+        installed_backends,
+        installed_engine_version,
     )
 
     section = _runtime_section()
-    configured_tag = section.get("tag") or default_tag()
-    have = installed_tags()
+    have = installed_backends()
 
-    # The tag actually serving (boot ladder: configured if installed, else
-    # newest installed). Present tense for the pane header.
-    tag = configured_tag if configured_tag in have else (have[0] if have else configured_tag)
+    # The tag actually serving, else the pinned one. Present tense for the
+    # pane header.
+    runtime_backend = have[0] if have else None
+    tag = (installed_engine_version(runtime_backend) if runtime_backend
+           else None) or engine_version()
 
     # A pending engine update exists when the user runs the local engine
-    # (enabled + something installed) and the configured tag — pinned or
-    # the Hermes-release default — is newer than anything on disk. The
-    # download is a button click, never automatic.
-    update_available = bool(
-        section.get("enabled") and have and configured_tag not in have)
+    # (enabled + something installed) and the pin — refreshed by a Hermes
+    # release — is newer than what is on disk. Installing is a button
+    # click, never automatic.
+    update_available = bool(section.get("enabled") and engine_update_pending())
 
-    runtime_installed = False
-    runtime_backend = None
-    root = runtimes_root() / tag
-    if root.exists():
-        for backend_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-            try:
-                server_binary(backend_dir)
-                runtime_installed = True
-                runtime_backend = backend_dir.name
-                break
-            except Exception:  # noqa: BLE001
-                continue
+    runtime_installed = bool(have)
 
     staged = []
     mdir = _models_dir()
@@ -402,7 +392,9 @@ async def local_models_status():
     return {
         "enabled": bool(section.get("enabled")),
         "tag": tag,
-        "configured_tag": configured_tag,
+        # The pinned build. Equal to "tag" unless an older engine is
+        # installed and its update has not been clicked yet.
+        "configured_tag": engine_version(),
         "update_available": update_available,
         "runtime_installed": runtime_installed,
         "runtime_backend": runtime_backend,
@@ -606,10 +598,10 @@ class RuntimeInstallBody(BaseModel):
 
 
 def _runtime_progress_hook(job: Dict[str, Any]):
-    """Adapter: ensure_runtime_installed's progress stream -> job fields.
+    """Adapter: pm's install progress stream -> job fields.
 
     Throttled to ~4 updates/s; each stage restarts the byte counters so
-    the bar reflects the CURRENT stage (download then unpack per asset).
+    the bar reflects the CURRENT stage (download then unpack per archive).
     Slow lines sit in the download stage for minutes — the counters are
     what proves liveness, so they must move on every tick."""
     state = {"last": 0.0}
@@ -628,12 +620,9 @@ def _runtime_progress_hook(job: Dict[str, Any]):
             else:
                 job["detail"] = (f"Downloading the local engine{suffix} — "
                                  f"{_human_gb(done)}")
-        elif stage == "extract":
+        else:
             job["phase"] = "unpacking-runtime"
             job["detail"] = f"Unpacking the engine{suffix}"
-        else:  # verify
-            job["phase"] = "verifying-runtime"
-            job["detail"] = "Verifying the engine"
         job["done_bytes"] = done
         job["total_bytes"] = total or None
 
@@ -643,20 +632,28 @@ def _runtime_progress_hook(job: Dict[str, Any]):
 @router.post("/api/local-models/runtime/install")
 async def local_models_runtime_install(body: RuntimeInstallBody):
     from hermes_cli.local_runtime.binaries import (
-        default_tag,
-        resolve_assets,
+        engine_version,
+        resolve_backend,
         select_backend,
+        unavailable_reason,
     )
     from hermes_cli.local_runtime.bootstrap import _detect_gpu_vendor
 
     section = _runtime_section()
-    tag = section.get("tag") or default_tag()
+    tag = engine_version()
     backend = body.backend or section.get("backend", "auto")
     if backend == "auto":
         backend = select_backend(_detect_gpu_vendor())
-    # Resolve first so an impossible combination fails the POST, not the job.
+    # An unpinned combination is knowable before any work starts, so an
+    # explicitly requested backend that this platform has no build for
+    # fails the POST with the pin table's own reason. "auto" instead walks
+    # down the ladder — the user asked for "whatever works here".
+    if body.backend:
+        reason = unavailable_reason(backend)
+        if reason is not None:
+            raise HTTPException(status_code=400, detail=reason)
     try:
-        plan = resolve_assets(tag, backend)
+        backend = resolve_backend(backend)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -665,20 +662,18 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
     def _run():
         try:
             from hermes_cli.local_runtime.binaries import (
-                ensure_runtime_installed,
-                installed_tags,
-                prune_old_tags,
+                ensure_engine,
+                installed_backends,
             )
 
-            previous = installed_tags()
+            was_installed = backend in installed_backends()
             job["phase"] = "downloading"
-            job["detail"] = f"Fetching {len(plan.assets)} package(s) for {backend}"
-            ensure_runtime_installed(tag, backend,
-                                     progress=_runtime_progress_hook(job))
+            job["detail"] = f"Fetching the {backend} engine"
+            ensure_engine(backend, progress=_runtime_progress_hook(job))
 
-            # Engine update path: a server already running on an older tag
-            # moves to the new one now — the click was the consent. Fresh
-            # installs (no server) skip this; Use/boot handles their start.
+            # Engine update path: a server already running on an older
+            # build moves to the new one now — the click was the consent.
+            # Fresh installs (no server) skip this; Use/boot starts them.
             restarted = False
             try:
                 from hermes_cli.local_runtime.bootstrap import (
@@ -688,7 +683,7 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
                 )
 
                 sup = get_supervisor()
-                if sup is not None and previous and tag not in previous:
+                if sup is not None and was_installed:
                     job["phase"] = "restarting"
                     job["detail"] = "Switching the running server to the new build"
                     shutdown_local_runtime()
@@ -699,14 +694,10 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
                 # it. Never fail the job on the restart nicety.
                 logger.warning("post-update restart skipped: %s", exc)
 
-            # N-1 retention, only after the new tag verified: keep it and the
-            # newest previous build as the rollback pin target.
-            try:
-                keep = [tag] + [t for t in previous if t != tag][:1]
-                prune_old_tags(keep)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("runtime prune skipped: %s", exc)
-
+            # No retention pass here. Store entries are keyed
+            # (package, version, target) and shared across profiles and
+            # installs, so deleting the superseded build is `hermes pm gc`'s
+            # call to make, not one install job's.
             job["phase"] = "done"
             job["status"] = "done"
             job["detail"] = (f"llama.cpp {tag} ready ({backend})"
@@ -880,9 +871,8 @@ async def local_models_quickstart(body: QuickstartBody):
     in the job with the usual phase/byte progress.
     """
     from hermes_cli.local_runtime.binaries import (
-        default_tag,
-        installed_tags,
-        resolve_assets,
+        installed_backends,
+        resolve_backend,
         select_backend,
     )
     from hermes_cli.local_runtime.bootstrap import (
@@ -919,17 +909,16 @@ async def local_models_quickstart(body: QuickstartBody):
     entry, variant = chosen
 
     section = _runtime_section()
-    tag = section.get("tag") or default_tag()
     backend = section.get("backend", "auto")
     if backend == "auto":
         backend = select_backend(_detect_gpu_vendor())
-    need_runtime = not installed_tags()
-    if need_runtime:
-        # Same preflight as /runtime/install: impossible combos fail the POST.
-        try:
-            resolve_assets(tag, backend)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=str(exc))
+    need_runtime = not installed_backends()
+    # Same preflight as /runtime/install: a platform with no usable build
+    # fails the POST rather than the job.
+    try:
+        backend = resolve_backend(backend)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc))
 
     need_download = variant.model_id not in staged_model_ids()
     download_plan = []  # (url, dest, bytes)
@@ -950,12 +939,11 @@ async def local_models_quickstart(body: QuickstartBody):
     def _run():
         try:
             if need_runtime:
-                from hermes_cli.local_runtime.binaries import ensure_runtime_installed
+                from hermes_cli.local_runtime.binaries import ensure_engine
 
                 job["phase"] = "installing-runtime"
                 job["detail"] = "Installing the local engine"
-                ensure_runtime_installed(tag, backend,
-                                         progress=_runtime_progress_hook(job))
+                ensure_engine(backend, progress=_runtime_progress_hook(job))
 
             if need_download:
                 job["phase"] = "downloading"

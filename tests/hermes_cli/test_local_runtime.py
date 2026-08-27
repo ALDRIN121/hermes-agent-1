@@ -18,9 +18,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli.local_runtime.binaries import (
-    AssetPlan,
     BinaryResolutionError,
-    resolve_assets,
+    resolve_backend,
     select_backend,
 )
 from hermes_cli.local_runtime.detect import DetectedServer, probe_port
@@ -162,56 +161,84 @@ def test_probe_dead_port_returns_none():
     assert probe_port(dead_port) is None
 
 
-# ── binary resolver (Rollout 2) ──────────────────────────────
+# ── engine packages (Rollout 2, on pm) ───────────────────────
 
 
-@pytest.mark.parametrize("os_name,arch,backend,ok", [
-    ("win", "x64", "cuda", True),
-    ("win", "x64", "vulkan", True),
-    ("win", "x64", "cpu", True),
-    ("win", "arm64", "cpu", True),
-    ("win", "arm64", "cuda", True),      # upstream ships these since ~b1036x (CUDA 13.4)
-    ("win", "arm64", "vulkan", False),
-    ("macos", "arm64", "metal", True),
-    ("ubuntu", "x64", "vulkan", True),
-    ("ubuntu", "x64", "cpu", True),
-    ("ubuntu", "x64", "cuda", False),    # no prebuilt linux CUDA
+def _llama(backend: str):
+    from pm.registry import get_package
+
+    return get_package(f"llamacpp-{backend}")
+
+
+def _target(os_name: str, arch: str) -> str:
+    return f"{os_name}-{arch}"
+
+
+@pytest.mark.parametrize("backend,target,ok", [
+    ("cuda", "win32-x64", True),
+    ("vulkan", "win32-x64", True),
+    ("cpu", "win32-x64", True),
+    ("cpu", "win32-arm64", True),
+    ("cuda", "win32-arm64", True),    # upstream ships these since ~b1036x (CUDA 13.4)
+    ("vulkan", "win32-arm64", False),  # upstream publishes no win-arm64 vulkan
+    ("metal", "darwin-arm64", True),
+    ("vulkan", "linux-x64", True),
+    ("cpu", "linux-x64", True),
+    ("cuda", "linux-x64", False),     # no prebuilt linux CUDA
 ])
-def test_resolver_platform_matrix(os_name, arch, backend, ok):
+def test_backend_platform_matrix(backend, target, ok):
+    pkg = _llama(backend)
     if ok:
-        plan = resolve_assets("b10290", backend, os_name=os_name, arch=arch)
-        assert plan.assets, "resolvable combination must yield assets"
-        # Invariant: every asset names the tag or is a paired runtime zip.
-        for asset in plan.assets:
-            assert "b10290" in asset or asset.startswith("cudart-")
+        urls = pkg.fetch_urls("10362", target)
+        assert urls, "available combination must yield archive urls"
+        # Every asset names the tag (the version without the b).
+        for url in urls:
+            assert "b10362" in url
+        assert pkg.missing_reason(target) is None
     else:
-        with pytest.raises(BinaryResolutionError):
-            resolve_assets("b10290", backend, os_name=os_name, arch=arch)
+        assert pkg.missing_reason(target) is not None
 
 
 def test_windows_cuda_pairs_cudart():
-    """Windows CUDA must ship the runtime zip — users have no toolkit."""
-    plan = resolve_assets("b10290", "cuda", os_name="win", arch="x64")
-    assert any(a.startswith("cudart-") for a in plan.assets)
+    """Windows CUDA must ship the cudart archive — users have no toolkit,
+    and Windows resolves a DLL from the executable's own directory."""
+    urls = _llama("cuda").fetch_urls("10362", "win32-x64")
+    assert len(urls) == 2
+    assert any("cudart-llama" in u for u in urls)
+    assert any("llama-b10362-bin" in u for u in urls)
 
 
 def test_windows_cuda_arm64_pairs_cudart_on_its_own_version():
     """arm64 CUDA rides its own CUDA line (13.4 at b10362, verified live):
-    both zips must agree on version and name the arch."""
-    plan = resolve_assets("b10362", "cuda", os_name="win", arch="arm64")
-    assert len(plan.assets) == 2
-    assert all("arm64" in a for a in plan.assets)
-    versions = {a.split("cuda-")[1].split("-")[0] for a in plan.assets}
-    assert len(versions) == 1, f"paired zips disagree on CUDA version: {plan.assets}"
-    assert any(a.startswith("cudart-") for a in plan.assets)
-    assert any(a.startswith("llama-") for a in plan.assets)
+    both archives must agree on version and name the arch."""
+    urls = _llama("cuda").fetch_urls("10362", "win32-arm64")
+    assert len(urls) == 2
+    assert all("arm64" in u for u in urls)
+    versions = {u.split("cuda-")[1].split("-")[0] for u in urls}
+    assert len(versions) == 1, f"paired zips disagree on CUDA version: {urls}"
+    assert any("cudart-" in u for u in urls)
+    assert any("llama-" in u for u in urls)
 
 
-def test_install_dir_is_profile_scoped(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    plan = AssetPlan(tag="b10290", backend="cuda")
-    assert str(tmp_path) in str(plan.install_dir)
-    assert "runtimes" in plan.install_dir.parts
+def test_backend_ladder_falls_back_when_unavailable(monkeypatch):
+    """An explicit backend this platform has no build for falls back down
+    the ladder instead of failing (the hardware-aware boot path)."""
+    import pm.store as store_mod
+
+    monkeypatch.setattr(store_mod, "current_target", lambda: "win32-arm64")
+    # vulkan has no win32-arm64 build; the ladder must walk to cuda (the
+    # next rung that IS built for this target), not fail.
+    assert resolve_backend("vulkan") == "cuda"
+
+
+def test_backend_ladder_raises_when_nothing_available(monkeypatch):
+    """When every rung is unavailable the declared gaps surface instead of
+    a silent wrong-backend install."""
+    import hermes_cli.local_runtime.binaries as binaries
+
+    monkeypatch.setattr(binaries, "unavailable_reason", lambda backend: f"no {backend}")
+    with pytest.raises(BinaryResolutionError):
+        resolve_backend("cuda")
 
 
 @pytest.mark.parametrize("vendor,os_name,expected", [
@@ -228,28 +255,6 @@ def test_backend_selection(vendor, os_name, expected):
     assert select_backend(vendor, os_name=os_name) == expected
 
 
-def test_sha256_mismatch_rejects(tmp_path, monkeypatch):
-    """A pinned hash that doesn't match the download must hard-fail."""
-    from hermes_cli.local_runtime import binaries
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    # Pre-place a wrong-content "download" so no network is touched. The
-    # asset name is host-dependent (win/.zip, ubuntu/.tar.gz, macos/.zip)
-    # — resolve it the way the installer will, so the poisoned file is the
-    # one it verifies on every CI platform.
-    plan = binaries.resolve_assets("b10290", "cpu")
-    asset = plan.assets[0]
-    downloads = binaries.runtimes_root() / "downloads"
-    downloads.mkdir(parents=True)
-    (downloads / asset).write_bytes(b"not the real archive")
-    with pytest.raises(BinaryResolutionError, match="sha256 mismatch"):
-        binaries.ensure_runtime_installed(
-            "b10290", "cpu",
-            expected_sha256={asset: "0" * 64})
-    # The poisoned download must not survive for a retry to trust.
-    assert not (downloads / asset).exists()
-
-
 # ── supervisor contracts (stubbed; no GPU) ───────────────────
 
 
@@ -258,7 +263,7 @@ def _make_supervisor(tmp_path, port):
     from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
     sup = LlamaServerSupervisor(
-        install_dir=tmp_path, models_dir=tmp_path, port=port)
+        server_exe=tmp_path / "llama-server.exe", models_dir=tmp_path, port=port)
     return sup
 
 
@@ -493,21 +498,26 @@ def test_resolution_kicks_boot_when_no_thread_is_booting(tmp_path, monkeypatch):
 def test_boot_in_flight_real_gate(tmp_path, monkeypatch):
     """_boot_in_flight exercised FOR REAL (the previous regression test
     monkeypatched it — and the real one threw TypeError on every call,
-    silently disabling the boot wait). Enabled + verified manifest on
-    disk -> True; either missing -> False."""
+    silently disabling the boot wait). Enabled + an installed engine ->
+    True; either missing -> False."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime import endpoint as ep
-    from hermes_cli.local_runtime.binaries import runtimes_root
+
+    def _install(backend, version):
+        from pm import paths
+        from pm.lock import Facts
+
+        store = paths.store_root()
+        name = f"llamacpp-{backend}"
+        entry = f"{name}-{version}-win32-x64"
+        (store / entry).mkdir(parents=True, exist_ok=True)
+        Facts(store / "facts.json").record(name, version, entry, {}, store)
 
     enabled = {"local_runtime": {"enabled": True}}
     # Not installed yet -> False.
     assert ep._boot_in_flight(enabled) is False
-    # Verified install manifest -> True.
-    install = runtimes_root() / "b10290" / "cuda"
-    install.mkdir(parents=True)
-    (install / "manifest.json").write_text(
-        json.dumps({"tag": "b10290", "verified_version": "5015 (abc)"}),
-        encoding="utf-8")
+    # An installed engine -> True.
+    _install("cpu", "10362")
     assert ep._boot_in_flight(enabled) is True
     # Disabled -> False even when installed.
     assert ep._boot_in_flight({"local_runtime": {"enabled": False}}) is False
@@ -529,7 +539,7 @@ def test_idle_sweep_unloads_idle_models(tmp_path, monkeypatch, stub_server):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
-    sup = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port)
+    sup = LlamaServerSupervisor(tmp_path / "llama-server.exe", tmp_path / "m", port=port)
 
     t0 = 1000.0
     # First sweep: starts the idle clocks, nothing unloads yet.
@@ -550,7 +560,7 @@ def test_idle_sweep_busy_model_resets_clock(tmp_path, monkeypatch, stub_server):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
-    sup = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port)
+    sup = LlamaServerSupervisor(tmp_path / "llama-server.exe", tmp_path / "m", port=port)
 
     t0 = 1000.0
     handler.slots = []                 # idle: clock starts
@@ -575,7 +585,7 @@ def test_bootstrap_skips_boot_with_no_staged_models(tmp_path, monkeypatch):
         called["spawn"] = True
         raise AssertionError("must not reach install/spawn")
 
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.ensure_runtime_installed", _boom)
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.ensure_engine", _boom)
     result = bs.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None
     assert called["spawn"] is False
@@ -599,8 +609,8 @@ def test_endpoint_identity_stable_across_supervisor_instances(tmp_path, monkeypa
         test_port = s.getsockname()[1]
     monkeypatch.setattr(sup_mod, "_DEFAULT_PORT", test_port)
 
-    first = LlamaServerSupervisor(tmp_path / "install", tmp_path / "models")
-    second = LlamaServerSupervisor(tmp_path / "install", tmp_path / "models")
+    first = LlamaServerSupervisor(tmp_path / "llama-server.exe", tmp_path / "models")
+    second = LlamaServerSupervisor(tmp_path / "llama-server.exe", tmp_path / "models")
     assert first.api_key == second.api_key
     assert len(first.api_key) >= 16
     assert first.port == second.port == test_port
@@ -703,13 +713,14 @@ def test_runtime_provider_seam_explicit_base_url_wins(tmp_path, monkeypatch):
 
 
 def test_local_runtime_config_defaults_shape():
-    """Contract: the section exists, is off by default, and carries no
-    context/VRAM knobs (design: constants, not knobs)."""
+    """Contract: the section exists, is off by default, carries no tag
+    (the build is pinned in pm/lock.json), and no context/VRAM knobs
+    (design: constants, not knobs)."""
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
     cfg = DEFAULT_CONFIG["local_runtime"]
     assert cfg["enabled"] is False
-    assert isinstance(cfg["tag"], str) and cfg["tag"].startswith("b")
+    assert "tag" not in cfg  # version authority is pm/lock.json
     forbidden = [k for k in cfg if "context" in k or "ctx" in k or "vram" in k or "kv" in k]
     assert forbidden == [], f"policy constants leaked into config: {forbidden}"
 
@@ -743,7 +754,7 @@ def test_bootstrap_reuses_running_server(tmp_path, monkeypatch, stub_server):
 
     called = []
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+        "hermes_cli.local_runtime.binaries.ensure_engine",
         lambda *a, **k: called.append(1))
     assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}}) is None
     assert called == []
@@ -754,14 +765,26 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
     None, chat falls back to configured providers."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime import bootstrap
+    from hermes_cli.local_runtime.bootstrap import models_dir
 
     monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
     monkeypatch.setattr(bootstrap, "_detect_gpu_vendor", lambda: None)
+    # Stage a model and an installed engine so boot proceeds far enough to
+    # hit the supervisor constructor, which is what blows up here.
+    models_dir().mkdir(parents=True, exist_ok=True)
+    (models_dir() / "m.gguf").write_bytes(b"x")
+    from pm import paths
+    from pm.lock import Facts
+
+    store = paths.store_root()
+    entry = "llamacpp-cpu-10362-win32-x64"
+    (store / entry).mkdir(parents=True, exist_ok=True)
+    Facts(store / "facts.json").record("llamacpp-cpu", "10362", entry, {}, store)
 
     def boom(*a, **k):
         raise RuntimeError("no network")
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed", boom)
+        "hermes_cli.local_runtime.supervisor.LlamaServerSupervisor", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped

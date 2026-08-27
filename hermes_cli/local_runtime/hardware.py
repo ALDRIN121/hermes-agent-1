@@ -207,19 +207,14 @@ def _engine_device_pool() -> "tuple[int, bool | None] | None":
     allocating. Carries no integrated verdict — callers must gate it."""
     try:
         from hermes_cli.local_runtime.binaries import (
-            installed_tags,
-            runtimes_root,
+            installed_backends,
             server_binary,
         )
 
-        tags = installed_tags()
-        if not tags:
+        backends = installed_backends()
+        if not backends:
             return None
-        tag_dir = runtimes_root() / tags[0]
-        backend_dirs = [d for d in tag_dir.iterdir() if d.is_dir()]
-        if not backend_dirs:
-            return None
-        exe = server_binary(backend_dirs[0])
+        exe = server_binary(backends[0])
         out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
                              text=True, timeout=30, cwd=str(exe.parent))
         if out.returncode != 0:

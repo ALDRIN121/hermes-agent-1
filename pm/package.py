@@ -76,12 +76,30 @@ class Package:
             raise InstallError(self.name, "package has no download url")
         return self.url.format(version=version, target=target)
 
+    def fetch_urls(self, version: str, target: str) -> list[str]:
+        """Every archive this target is built from, in extraction order.
+        Almost every package is one archive; override this (instead of
+        fetch_url) when upstream splits a runtime across downloads that
+        have to land in one directory."""
+        return [self.fetch_url(version, target)]
+
     def store_entry(self, version: str, target: str) -> str:
         return f"{self.name}-{version}-{target}"
 
+    def known_sha256(self, version: str, url: str) -> Optional[str]:
+        """A digest the upstream already publishes, so `pm lock` does not
+        have to stream the artifact to learn it. Override where a release
+        API serves digests (GitHub's does); returning None means hash it."""
+        return None
+
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
         """Turn the verified archive into the staged tree. Default: extract.
-        Override for self-extractors or install-style unpacks (npm)."""
+        Override for self-extractors or install-style unpacks (npm).
+
+        Called once per artifact; extract() empties its destination, so a
+        multi-archive package receives each later archive in a scratch dir
+        that pm merges into the staged tree.
+        """
         from pm.store import extract
 
         extract(archive, staged)

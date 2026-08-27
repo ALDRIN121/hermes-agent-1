@@ -10,7 +10,19 @@ from pm import paths
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.registry import get_package, walk
-from pm.store import Store, current_target
+from pm.store import Store, current_target, merge_tree
+
+# ``progress(stage, done, total, label)`` — stage is "download" | "unpack",
+# label is the archive counter ("1/2") when a package has several. Slow
+# lines sit in one stage for minutes, so the byte counters are what prove
+# liveness to a UI.
+
+
+def _artifact_progress(progress, index: int, count: int):
+    if progress is None:
+        return None
+    label = f"{index + 1}/{count}" if count > 1 else ""
+    return lambda done, total: progress("download", done, total, label)
 
 
 def _lockfile() -> Lockfile:
@@ -83,7 +95,14 @@ def _refuse_lazy(name: str, what: str) -> InstallError:
     )
 
 
-def _install(package: Package, lockfile: Lockfile, facts: Facts, store: Store, target: str) -> None:
+def _install(
+    package: Package,
+    lockfile: Lockfile,
+    facts: Facts,
+    store: Store,
+    target: str,
+    progress=None,
+) -> None:
     version = lockfile.version(package.name)
     if version is None:
         raise InstallError(
@@ -94,8 +113,7 @@ def _install(package: Package, lockfile: Lockfile, facts: Facts, store: Store, t
     if reason is not None:
         raise InstallError(package.name, f"unavailable on {target}: {reason}", "none")
 
-    sha256 = lockfile.sha256(package.name, target)
-    url = lockfile.url(package.name, target)
+    artifacts = lockfile.artifacts(package.name, target)
     entry_name = package.store_entry(version, target)
 
     with store.install_lock():
@@ -106,7 +124,7 @@ def _install(package: Package, lockfile: Lockfile, facts: Facts, store: Store, t
         if store.published(entry_name) and not package.verify(entry, target):
             shutil.rmtree(entry, ignore_errors=True)
         if not store.published(entry_name):
-            if sha256 is None or url is None:
+            if not artifacts:
                 raise InstallError(
                     package.name,
                     f"no artifact for {target} in the lockfile",
@@ -115,8 +133,25 @@ def _install(package: Package, lockfile: Lockfile, facts: Facts, store: Store, t
             with store.scratch() as scratch:
                 staged = scratch / "tree"
                 try:
-                    archive = store.fetch(url, sha256, scratch)
-                    package.unpack(archive, staged, target)
+                    for index, artifact in enumerate(artifacts):
+                        label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
+                        archive = store.fetch(
+                            artifact["url"], artifact["sha256"], scratch,
+                            progress=_artifact_progress(
+                                progress, index, len(artifacts)),
+                        )
+                        if progress is not None:
+                            progress("unpack", 0, 0, label)
+                        if index == 0:
+                            package.unpack(archive, staged, target)
+                            continue
+                        # unpack() empties its destination by contract, so
+                        # a second archive must be unpacked apart and moved
+                        # in — extracting over `staged` would delete the
+                        # first archive's files.
+                        extra = scratch / f"extra-{index}"
+                        package.unpack(archive, extra, target)
+                        merge_tree(extra, staged)
                     package.stage(store, staged, version, target)
                     store.publish(staged, entry_name)
                 except InstallError:
@@ -134,10 +169,20 @@ def _install(package: Package, lockfile: Lockfile, facts: Facts, store: Store, t
             package.migrate(previous, version)
 
 
-def ensure(name: str, *, base_env: Optional[dict] = None, explicit: bool = False) -> Runner:
+def ensure(
+    name: str,
+    *,
+    base_env: Optional[dict] = None,
+    explicit: bool = False,
+    progress=None,
+) -> Runner:
     """``explicit`` marks a deliberate install command (`hermes pm
     install`, `hermes pm bundle`) — those ARE the remedy the lazy-install
-    policy names, so the policy does not apply to them."""
+    policy names, so the policy does not apply to them.
+
+    ``progress(stage, done, total, label)`` reports the slow parts of an
+    install to a UI; see _artifact_progress.
+    """
     if isinstance(get_package(name), StatePackage):
         sync_venv(explicit=explicit)
         return Runner(name, compose_env([], base=base_env))
@@ -156,7 +201,7 @@ def ensure(name: str, *, base_env: Optional[dict] = None, explicit: bool = False
         raise _refuse_lazy(name, ", ".join(p.name for p in missing))
 
     for package in missing:
-        _install(package, lockfile, facts, store, target)
+        _install(package, lockfile, facts, store, target, progress=progress)
     if missing:
         facts.reload()
 

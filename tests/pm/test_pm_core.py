@@ -48,6 +48,21 @@ class TopTool(FakeTool):
     deps = ("deptool",)
 
 
+class MultiTool(BinaryPackage):
+    """A runtime split across two archives that must land in one entry."""
+    name = "multitool"
+    probe_version = False
+    flatten = False
+    binary_rel = {"win32": "bin/multitool", "posix": "bin/multitool"}
+
+    def fetch_urls(self, version, target):
+        return [f"{MultiTool.base_url}/{self.name}-{version}-a.tar.gz",
+                f"{MultiTool.base_url}/{self.name}-{version}-b.tar.gz"]
+
+    def fetch_url(self, version, target):
+        return self.fetch_urls(version, target)[0]
+
+
 def make_tar(docroot: Path, name: str, files: dict[str, str]) -> tuple[str, str]:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
@@ -89,9 +104,10 @@ def pm_env(tmp_path, served, monkeypatch):
 
     saved = dict(registry._packages)
     registry._packages.clear()
-    for cls in (FakeTool, DepTool, TopTool):
+    for cls in (FakeTool, DepTool, TopTool, MultiTool):
         registry._packages[cls.name] = cls()
     FakeTool.base_url = base_url
+    MultiTool.base_url = base_url
 
     lock_dir = tmp_path / "repo-lock"
     lock_dir.mkdir()
@@ -152,6 +168,89 @@ def test_fetch_is_a_store_entry(pm_env):
     ensure("faketool", base_env={})
     fetches = [p for p in runtime.iterdir() if p.name.startswith("fetch-")]
     assert len(fetches) == 1
+
+
+def test_multi_archive_merges_into_one_entry(pm_env):
+    """A package split across two archives lands in ONE store entry: a
+    second entry would put the DLLs where a loading executable can never
+    find them. No per-archive entries, no leftover scratch."""
+    from pm.ensure import ensure, is_installed
+
+    lockfile_path, runtime, docroot, _ = pm_env
+    _, digest_a = make_tar(docroot, "multitool-1.0-a.tar.gz",
+                           {"bin/multitool": "#!a"})
+    _, digest_b = make_tar(docroot, "multitool-1.0-b.tar.gz",
+                           {"lib/extra.so": "y"})
+    lockfile = Lockfile(lockfile_path)
+    lockfile.set_pin("multitool", "1.0", {"any": [
+        {"url": f"{FakeTool.base_url}/multitool-1.0-a.tar.gz", "sha256": digest_a},
+        {"url": f"{FakeTool.base_url}/multitool-1.0-b.tar.gz", "sha256": digest_b},
+    ]})
+    lockfile.save()
+
+    ensure("multitool", base_env={})
+    assert is_installed("multitool")
+
+    entry_dirs = [p for p in runtime.iterdir() if p.name.startswith("multitool-")]
+    assert len(entry_dirs) == 1, f"expected one merged entry, got {entry_dirs}"
+    entry = entry_dirs[0]
+    assert (entry / "bin" / "multitool").is_file()
+    assert (entry / "lib" / "extra.so").is_file()
+    # Both archives verified before publish: a digest mismatch in either
+    # must fail loudly, not be silently dropped.
+    _, bad = make_tar(docroot, "multitool-2.0-b.tar.gz", {"lib/extra.so": "z"})
+    lockfile = Lockfile(lockfile_path)
+    lockfile.set_pin("multitool", "2.0", {"any": [
+        {"url": f"{FakeTool.base_url}/multitool-2.0-a.tar.gz", "sha256": "0" * 64},
+        {"url": f"{FakeTool.base_url}/multitool-2.0-b.tar.gz", "sha256": bad},
+    ]})
+    lockfile.save()
+    with pytest.raises(InstallError):
+        ensure("multitool", base_env={})
+
+
+def test_install_emits_staged_progress(pm_env):
+    """ensure() streams download -> unpack per artifact, labelled when a
+    package has several. A slow download must not look frozen."""
+    from pm.ensure import ensure
+
+    lockfile_path, _, docroot, _ = pm_env
+    _, digest_a = make_tar(docroot, "multitool-1.0-a.tar.gz", {"bin/multitool": "#!a"})
+    _, digest_b = make_tar(docroot, "multitool-1.0-b.tar.gz", {"lib/extra.so": "y"})
+    lockfile = Lockfile(lockfile_path)
+    lockfile.set_pin("multitool", "1.0", {"any": [
+        {"url": f"{FakeTool.base_url}/multitool-1.0-a.tar.gz", "sha256": digest_a},
+        {"url": f"{FakeTool.base_url}/multitool-1.0-b.tar.gz", "sha256": digest_b},
+    ]})
+    lockfile.save()
+
+    events: list[tuple[str, str]] = []
+    ensure("multitool", base_env={},
+           progress=lambda stage, d, t, label: events.append((stage, label)))
+
+    assert ("download", "1/2") in events
+    assert ("download", "2/2") in events
+    assert ("unpack", "1/2") in events
+    assert ("unpack", "2/2") in events
+    # download before unpack within each artifact.
+    stages = [s for s, _ in events]
+    assert stages.index("download") < stages.index("unpack")
+
+
+def test_download_ticks_per_chunk(pm_env, monkeypatch):
+    """The raw download stream reports byte progress on every chunk so a
+    slow line proves liveness."""
+    from pm.store import Store
+
+    _, runtime, docroot, _ = pm_env
+    ticks: list[tuple[int, int]] = []
+    store = Store(runtime / "scratch")
+    url = f"{FakeTool.base_url}/faketool-1.0.tar.gz"
+    _, digest = make_tar(docroot, "faketool-1.0.tar.gz", {"bin/faketool": "#!x"})
+    archive = store.fetch(url, digest, runtime / "scratch",
+                          progress=lambda d, t: ticks.append((d, t)))
+    assert archive.is_file()
+    assert ticks and ticks[-1][0] == ticks[-1][1] == archive.stat().st_size
 
 
 def test_deps_compose_dependents_win(pm_env):

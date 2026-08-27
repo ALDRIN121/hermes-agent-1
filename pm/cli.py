@@ -16,30 +16,37 @@ from pm.store import ALL_TARGETS, current_target, hash_url
 
 
 def cmd_lock(args) -> int:
-    """--bump <name> <version>: resolve every target's url, fetch, hash,
-    write. Target-independent urls collapse to one "any" artifact."""
+    """--bump <name> <version>: resolve every target's archives, hash them,
+    write. A target with one archive pins the object; several pin a list.
+    Target-independent urls collapse to one "any" artifact."""
     lockfile = _lockfile()
     package = get_package(args.name)
-    artifacts: dict[str, dict] = {}
+    artifacts: dict[str, object] = {}
+
+    def pin(url: str) -> dict:
+        print(f"    {url}")
+        digest = package.known_sha256(args.version, url) or hash_url(url)
+        print(f"      sha256 {digest}")
+        return {"url": url, "sha256": digest}
 
     urls = {
-        target: package.fetch_url(args.version, target)
+        target: package.fetch_urls(args.version, target)
         for target in ALL_TARGETS
         if package.missing_reason(target) is None
     }
-    if len(set(urls.values())) == 1:
-        url = next(iter(urls.values()))
-        print(f"  any: {url}")
-        artifacts["any"] = {"url": url, "sha256": hash_url(url)}
-        print(f"    sha256 {artifacts['any']['sha256']}")
+    distinct = {tuple(u) for u in urls.values()}
+    if len(distinct) == 1:
+        print("  any:")
+        pinned = [pin(url) for url in next(iter(urls.values()))]
+        artifacts["any"] = pinned[0] if len(pinned) == 1 else pinned
     else:
-        for target, url in urls.items():
-            print(f"  {target}: {url}")
-            artifacts[target] = {"url": url, "sha256": hash_url(url)}
-            print(f"    sha256 {artifacts[target]['sha256']}")
+        for target, target_urls in urls.items():
+            print(f"  {target}:")
+            pinned = [pin(url) for url in target_urls]
+            artifacts[target] = pinned[0] if len(pinned) == 1 else pinned
     lockfile.set_pin(args.name, args.version, artifacts)
     lockfile.save()
-    print(f"pinned {args.name} {args.version} ({len(artifacts)} artifacts)")
+    print(f"pinned {args.name} {args.version} ({len(artifacts)} targets)")
     return 0
 
 

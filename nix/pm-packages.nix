@@ -24,21 +24,31 @@ let
     in
     "${os}-${arch}";
 
-  artifactFor = pin: pin.artifacts.${target} or pin.artifacts.any or null;
+  # A target pins one artifact or a list of them (a runtime split across
+  # archives that must land in one directory). Normalize to a list.
+  artifactsFor =
+    pin:
+    let
+      found = pin.artifacts.${target} or pin.artifacts.any or null;
+    in
+    if found == null then null else if builtins.isList found then found else [ found ];
 
-  derive = name: pin: artifact:
+  derive = name: pin: artifacts:
     stdenv.mkDerivation {
       pname = name;
       version = pin.version;
 
-      src = fetchurl {
+      srcs = map (artifact: fetchurl {
         url = artifact.url;
         sha256 = artifact.sha256;
-      };
+      }) artifacts;
 
-      # pm's store publishes the unpacked tree; mirror that shape.
+      # pm's store publishes the unpacked tree; mirror that shape. Several
+      # archives unpack over one another into the same root, exactly as
+      # pm merges them into one store entry.
       sourceRoot = ".";
-      nativeBuildInputs = lib.optional (lib.hasSuffix ".zip" artifact.url) unzip;
+      nativeBuildInputs =
+        lib.optional (lib.any (a: lib.hasSuffix ".zip" a.url) artifacts) unzip;
       dontBuild = true;
       dontConfigure = true;
 
@@ -52,8 +62,8 @@ lib.filterAttrs (_: v: v != null) (
   lib.mapAttrs (
     name: pin:
     let
-      artifact = artifactFor pin;
+      artifacts = artifactsFor pin;
     in
-    if artifact == null then null else derive name pin artifact
+    if artifacts == null then null else derive name pin artifacts
   ) lock.packages
 )

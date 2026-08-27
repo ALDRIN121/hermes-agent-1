@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 
 def window_overrides_path():
-    from hermes_cli.local_runtime.binaries import runtimes_root
+    from hermes_cli.local_runtime.binaries import runtime_state_root
 
-    return runtimes_root() / "window_overrides.json"
+    return runtime_state_root() / "window_overrides.json"
 
 
 def load_window_overrides() -> dict:

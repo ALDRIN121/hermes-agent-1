@@ -20,7 +20,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home  # noqa: F401 — config paths
 
-from hermes_cli.local_runtime.binaries import runtimes_root
+from hermes_cli.local_runtime.binaries import runtime_state_root
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +51,10 @@ def _detect_gpu_vendor() -> str | None:
 def models_dir() -> Path:
     """Machine-scoped, deliberately NOT profile-scoped: a 20 GB GGUF is a
     machine asset, and every profile shares the one managed server that
-    serves it. See runtimes_root() for the same rule on the engine."""
-    from hermes_constants import get_default_hermes_root
+    serves it. See runtime_state_root() for the same rule on the engine."""
+    from hermes_cli.local_runtime.binaries import models_root
 
-    return get_default_hermes_root() / "models"
+    return models_root()
 
 
 def assets_dir() -> Path:
@@ -198,8 +198,10 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
     try:
         from hermes_cli.local_runtime.binaries import (
-            ensure_runtime_installed,
+            installed_backends,
+            resolve_backend,
             select_backend,
+            server_binary,
         )
         from hermes_cli.local_runtime.hardware import probe_budget
         from hermes_cli.local_runtime.presets import generate_presets
@@ -208,26 +210,20 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         backend = section.get("backend", "auto")
         if backend == "auto":
             backend = select_backend(_detect_gpu_vendor())
-        # Boot ladder: serve what is INSTALLED, never download here. The
-        # configured tag (config root-of-trust; deep-merge supplies the
-        # Hermes-release default when unpinned) is preferred; when it isn't
-        # installed yet, the newest installed tag serves and the status
-        # endpoint reports the pending update — the download is a deliberate
-        # button click in the pane, not a boot-path surprise (a multi-minute
-        # inline download here is exactly how the onboarding bounce returns).
-        from hermes_cli.local_runtime.binaries import default_tag, installed_tags
-
-        tag = section.get("tag") or default_tag()
-        have = installed_tags()
-        if tag not in have:
+        backend = resolve_backend(backend)
+        # Boot ladder: serve what is INSTALLED, never download here. A
+        # multi-minute inline engine download at session start is exactly
+        # how the onboarding bounce returns — installing is a deliberate
+        # button click in the Local Models pane.
+        have = installed_backends()
+        if backend not in have:
             if not have:
-                logger.info("local runtime enabled but no build installed; "
+                logger.info("local runtime enabled but no engine installed; "
                             "install happens in the Local Models pane")
                 return None
-            logger.info("configured tag %s not installed; serving %s "
-                        "(update is a click in Local Models)", tag, have[0])
-            tag = have[0]
-        install_dir = ensure_runtime_installed(tag, backend)
+            logger.info("%s engine not installed; serving the %s build", backend, have[0])
+            backend = have[0]
+        server_exe = server_binary(backend)
 
         mdir = models_dir()
         mdir.mkdir(parents=True, exist_ok=True)
@@ -239,7 +235,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         # is freed before the new instance loads anything. Pricing against
         # live-free here once pinned a fitting model's weights to CPU
         # because the probe saw the predecessor's VRAM as gone.
-        preset_path = runtimes_root() / "presets.ini"
+        preset_path = runtime_state_root() / "presets.ini"
         try:
             entries = generate_presets(mdir, probe_budget(planning=True), preset_path)
             for entry in entries:
@@ -262,15 +258,15 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                 preset_path = None
 
         sup = LlamaServerSupervisor(
-            install_dir, mdir,
+            server_exe, mdir,
             models_max=int(section.get("models_max", 4)),
             port=int(section.get("port", 0)) or None,
             preset_path=preset_path,
         )
         sup.start()
         _SUPERVISOR = sup
-        logger.info("managed llama-server up at %s (backend=%s tag=%s)",
-                    sup.base_url, backend, tag)
+        logger.info("managed llama-server up at %s (backend=%s)",
+                    sup.base_url, backend)
         _start_idle_sweeper(sup)
         return sup
     except Exception as exc:  # noqa: BLE001 — never break session start

@@ -12,7 +12,7 @@ from typing import Optional
 
 from pm.package import InstallError, Package, StatePackage
 from pm.registry import register
-from pm.store import Store, flatten_single_dir
+from pm.store import ALL_TARGETS, Store, flatten_single_dir, merge_tree
 
 _RUST_TRIPLE = {
     "win32-x64": "x86_64-pc-windows-msvc",
@@ -540,3 +540,164 @@ class ChromiumHeadlessShell(PlaywrightBrowser):
     gaps = Chromium.gaps
     _FILE = "chrome-headless-shell"
     _MIRROR_FILE = "chromium-headless-shell"
+
+
+class LlamaCpp(BinaryPackage):
+    """One llama.cpp backend build. Backends are dlopen'd plugins, so a
+    usable engine is one archive per (target, backend) — plus, for Windows
+    CUDA, the cudart archive: end users have no CUDA toolkit, and Windows
+    resolves a DLL from the loading executable's own directory, so those
+    DLLs must land beside llama-server.exe rather than in a second entry.
+
+    Backend is a HARDWARE choice, not a target, so each backend is its own
+    optional package and the runtime asks for the one this machine can
+    use. Version is llama.cpp's rolling release tag without the `b`.
+    """
+
+    optional = True
+    on_path = False
+    binary_rel = {"win32": "llama-server.exe", "posix": "llama-server"}
+    flatten = False
+
+    backend: str = ""
+    # Release-asset infix per target, or absent where upstream ships none.
+    assets: dict[str, str] = {}
+
+    @property
+    def gaps(self) -> dict[str, str]:  # type: ignore[override]
+        return {
+            target: f"llama.cpp publishes no {self.backend} build for {target}"
+            for target in ALL_TARGETS
+            if target not in self.assets
+        }
+
+    def _asset_names(self, version: str, target: str) -> list[str]:
+        ext = "zip" if target.startswith("win32") else "tar.gz"
+        return [f"llama-b{version}-bin-{self.assets[target]}.{ext}"]
+
+    def fetch_urls(self, version: str, target: str) -> list[str]:
+        return [
+            f"https://github.com/ggml-org/llama.cpp/releases/download/b{version}/{asset}"
+            for asset in self._asset_names(version, target)
+        ]
+
+    def fetch_url(self, version: str, target: str) -> str:
+        return self.fetch_urls(version, target)[0]
+
+    def known_sha256(self, version: str, url: str) -> Optional[str]:
+        """GitHub's release API serves every asset's digest, so pinning a
+        280 MB engine costs one API call instead of the download."""
+        return _github_release_digests("ggml-org/llama.cpp", f"b{version}").get(
+            url.rsplit("/", 1)[-1]
+        )
+
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
+        """Some archives nest the binaries under build/bin; hoist them so
+        binary_rel is one path for every target."""
+        if (staged / self.binary(staged, target).name).is_file():
+            return
+        found = sorted(staged.rglob(self.binary(staged, target).name))
+        if not found:
+            raise InstallError(self.name, "archive contains no llama-server")
+        merge_tree(found[0].parent, staged)
+
+    def verify(self, entry: Path, target: str) -> bool:
+        """--version is llama-server's liveness proof AND the check that
+        the backend's shared libraries resolve: a CUDA build with no
+        cudart beside it fails to start here rather than at first chat."""
+        binary = self.binary(entry, target)
+        if binary is None or not binary.is_file():
+            return False
+        try:
+            proc = subprocess.run(
+                [str(binary), "--version"],
+                capture_output=True,
+                timeout=60,
+                cwd=str(binary.parent),
+            )
+        except OSError:
+            return False
+        return proc.returncode == 0
+
+
+def _github_release_digests(repo: str, tag: str) -> dict[str, str]:
+    import json
+    import urllib.request
+
+    cached = _release_digest_cache.get((repo, tag))
+    if cached is not None:
+        return cached
+    url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers={"User-Agent": "hermes-pm"}),
+            timeout=120,
+        ) as resp:
+            release = json.load(resp)
+    except Exception:
+        return {}
+    digests = {}
+    for asset in release.get("assets", []):
+        digest = (asset.get("digest") or "").partition("sha256:")[2]
+        if digest:
+            digests[asset["name"]] = digest
+    _release_digest_cache[(repo, tag)] = digests
+    return digests
+
+
+_release_digest_cache: dict[tuple, dict] = {}
+
+
+@register
+class LlamaCppCuda(LlamaCpp):
+    """Windows only: upstream publishes no prebuilt Linux CUDA archive at
+    current tags, so NVIDIA Linux users run the vulkan build."""
+
+    name = "llamacpp-cuda"
+    backend = "cuda"
+    # CUDA 13.3 verified against 13.1/13.2 drivers; arm64 prebuilts landed
+    # on 13.4 (the only CUDA line upstream builds for win-arm64).
+    assets = {
+        "win32-x64": "win-cuda-13.3-x64",
+        "win32-arm64": "win-cuda-13.4-arm64",
+    }
+    _CUDART = {"win32-x64": "13.3-x64", "win32-arm64": "13.4-arm64"}
+
+    def _asset_names(self, version: str, target: str) -> list[str]:
+        return super()._asset_names(version, target) + [
+            f"cudart-llama-bin-win-cuda-{self._CUDART[target]}.zip"
+        ]
+
+
+@register
+class LlamaCppVulkan(LlamaCpp):
+    name = "llamacpp-vulkan"
+    backend = "vulkan"
+    assets = {
+        "win32-x64": "win-vulkan-x64",
+        "linux-x64": "ubuntu-vulkan-x64",
+        "linux-arm64": "ubuntu-vulkan-arm64",
+    }
+
+
+@register
+class LlamaCppMetal(LlamaCpp):
+    """macOS archives are unified builds with Metal compiled in."""
+
+    name = "llamacpp-metal"
+    backend = "metal"
+    assets = {"darwin-x64": "macos-x64", "darwin-arm64": "macos-arm64"}
+
+
+@register
+class LlamaCppCpu(LlamaCpp):
+    name = "llamacpp-cpu"
+    backend = "cpu"
+    assets = {
+        "win32-x64": "win-cpu-x64",
+        "win32-arm64": "win-cpu-arm64",
+        "linux-x64": "ubuntu-x64",
+        "linux-arm64": "ubuntu-arm64",
+        "darwin-x64": "macos-x64",
+        "darwin-arm64": "macos-arm64",
+    }

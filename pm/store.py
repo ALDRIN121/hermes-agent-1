@@ -104,12 +104,14 @@ def hash_url(url: str) -> str:
     return digest.hexdigest()
 
 
-def download(url: str, dest: Path, sha256: str) -> Path:
+def download(url: str, dest: Path, sha256: str, progress=None) -> Path:
     import hashlib
     import urllib.request
 
     """Fetch url into dest dir, hashing while streaming; the digest is proven
-    before the caller ever sees the file."""
+    before the caller ever sees the file. ``progress(done, total)`` ticks per
+    block — a several-hundred-MB engine archive on a slow line must never
+    look hung (total is 0 when the server sends no Content-Length)."""
     if not (url.startswith("https://") or url.startswith(_LOOPBACK)):
         raise ValueError(f"refusing non-https url: {url}")
     dest.mkdir(parents=True, exist_ok=True)
@@ -119,9 +121,14 @@ def download(url: str, dest: Path, sha256: str) -> Path:
     with urllib.request.urlopen(
         urllib.request.Request(url, headers=_UA), timeout=600
     ) as resp, open(archive, "wb") as out:
+        total = int(resp.headers.get("Content-Length") or 0)
+        done = 0
         for block in iter(lambda: resp.read(1024 * 1024), b""):
             digest.update(block)
             out.write(block)
+            done += len(block)
+            if progress is not None:
+                progress(done, total)
 
     actual = digest.hexdigest()
     if actual != sha256:
@@ -195,6 +202,21 @@ def flatten_single_dir(dest: Path) -> None:
     inner.rmdir()
 
 
+def merge_tree(src: Path, dst: Path) -> None:
+    """Move src's tree into dst, keeping both layouts. A file present in
+    both is unresolvable — two archives disagreeing about one file cannot
+    be settled by extraction order, so it fails loudly instead."""
+    for item in sorted(src.rglob("*")):
+        if item.is_dir():
+            continue
+        rel = item.relative_to(src)
+        target = dst / rel
+        if target.exists():
+            raise FileExistsError(f"archives disagree about {rel}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        item.replace(target)
+
+
 class Store:
     """One directory of immutable published entries plus a scratch area.
     Downloads are entries too, keyed by hash, so rebuilds never re-fetch."""
@@ -208,7 +230,7 @@ class Store:
     def published(self, name: str) -> bool:
         return self.entry(name).is_dir()
 
-    def fetch(self, url: str, sha256: str, scratch: Path) -> Path:
+    def fetch(self, url: str, sha256: str, scratch: Path, progress=None) -> Path:
         """Verified archive for url, from the store if already fetched.
         The entry is `fetch-<sha256[:16]>/` holding the single file. A
         published fetch entry was hash-verified before publish and is
@@ -220,7 +242,7 @@ class Store:
             if len(files) == 1:
                 return files[0]
             shutil.rmtree(entry, ignore_errors=True)
-        archive = download(url, scratch, sha256)
+        archive = download(url, scratch, sha256, progress=progress)
         staged = scratch / entry_name
         staged.mkdir(parents=True)
         archive.rename(staged / archive.name)

@@ -4,6 +4,11 @@ file (what is actually on this machine).
 lock.json:  {"schema": 1, "packages": {name: {"version": ..., "artifacts": {target: {"url": ..., "sha256": ...}}}}}
 facts.json: {"schema": 1, "packages": {name: {"entry": ..., "version": ..., "env": ..., "stamp": ...}}}
 
+A target's value is one {"url", "sha256"} object, or a LIST of them when the
+package is split across several archives that must land in one directory
+(llama.cpp's engine zip and its cudart zip: Windows resolves a DLL from the
+loading executable's own directory). Both shapes read back as a list.
+
 lock.json artifacts carry the RESOLVED url beside the hash: the lockfile is
 the complete machine interface (nix reads it as pure data), and the python
 url templates are consulted only at `pm lock --bump` time. The "any" target
@@ -62,15 +67,17 @@ class Lockfile:
     def version(self, name: str) -> str | None:
         return (self._packages.get(name) or {}).get("version")
 
-    def artifact(self, name: str, target: str) -> dict | None:
+    def artifacts(self, name: str, target: str) -> list[dict]:
+        """Every archive this target needs, in extraction order. One
+        artifact and a list of them are the same thing here — the single
+        form is just the common case written short."""
         artifacts = (self._packages.get(name) or {}).get("artifacts") or {}
-        return artifacts.get(target) or artifacts.get("any")
-
-    def sha256(self, name: str, target: str) -> str | None:
-        return (self.artifact(name, target) or {}).get("sha256")
-
-    def url(self, name: str, target: str) -> str | None:
-        return (self.artifact(name, target) or {}).get("url")
+        found = artifacts.get(target)
+        if found is None:
+            found = artifacts.get("any")
+        if found is None:
+            return []
+        return list(found) if isinstance(found, list) else [found]
 
     def names(self) -> list[str]:
         return sorted(self._packages)

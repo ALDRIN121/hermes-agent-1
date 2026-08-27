@@ -29,15 +29,23 @@ def _stamp() -> dict:
 
 
 def store_root() -> Path:
+    """The byte store. Entries are keyed (package, version, target) and
+    hold nothing profile-specific, so the store is MACHINE-scoped: a
+    second profile reuses the engine and browser this machine already
+    downloaded instead of fetching its own copy.
+
+    A payload overrides it — a sealed bundle carries its own store beside
+    its manifest, and that IS per-install by construction.
+    """
     env = os.environ.get("HERMES_RUNTIME_DIR")
     if env:
         return Path(env).resolve()
     stamped = _stamp().get("runtimeDir")
     if stamped:
         return Path(stamped).resolve()
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_default_hermes_root
 
-    return get_hermes_home() / "tools"
+    return get_default_hermes_root() / "tools"
 
 
 def facts_path() -> Path:

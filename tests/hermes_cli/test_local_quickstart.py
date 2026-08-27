@@ -59,10 +59,10 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
 
     # Leg 1: no runtime installed yet; install is the stubbed binaries call.
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_tags", lambda: [])
+        "hermes_cli.local_runtime.binaries.installed_backends", lambda: [])
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
-        lambda tag, backend, progress=None: calls.append("install"))
+        "hermes_cli.local_runtime.binaries.ensure_engine",
+        lambda backend, progress=None: calls.append("install"))
 
     # Leg 2: nothing staged; the download writes the files the plan names.
     def _fake_download(url, dest, job, *, base_done=0, keep_totals=False):
@@ -113,10 +113,10 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
+        "hermes_cli.local_runtime.binaries.installed_backends", lambda: ["cpu"])
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
-        lambda tag, backend, progress=None: calls.append("install"))
+        "hermes_cli.local_runtime.binaries.ensure_engine",
+        lambda backend, progress=None: calls.append("install"))
 
     # Every catalog variant reads as staged.
     from hermes_cli.local_runtime.catalog import CATALOG

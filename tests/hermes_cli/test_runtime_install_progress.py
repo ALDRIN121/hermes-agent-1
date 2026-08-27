@@ -1,98 +1,16 @@
 """Runtime install progress: the slow legs must tick, never hang silently.
 
 The incident: 'Installing runtime…' sat frozen for minutes on a slow
-line — ensure_runtime_installed downloaded and extracted with no
-progress stream, so both the quickstart hero and the pane's install row
-showed a dead bar. Contract: _download and _extract tick per chunk /
-per member, ensure_runtime_installed forwards a staged stream, and the
-router's hook translates it into live job fields."""
+line — the old bespoke downloader streamed no progress, so both the
+quickstart hero and the pane's install row showed a dead bar. The engine
+now installs through pm, which streams download -> unpack per artifact;
+this test pins the router hook that translates that stream into live job
+fields. (The pm-side streaming itself is covered in tests/pm/test_pm_core.py.)
+"""
 
 from __future__ import annotations
 
-import io
-import zipfile
-from pathlib import Path
-
-import hermes_cli.local_runtime.binaries as binaries
 from hermes_cli.web_routers.local_models import _job, _runtime_progress_hook
-
-
-def _make_zip(path: Path, names_sizes: dict[str, int]) -> None:
-    with zipfile.ZipFile(path, "w") as z:
-        for name, size in names_sizes.items():
-            z.writestr(name, b"x" * size)
-
-
-def test_extract_ticks_per_member(tmp_path):
-    archive = tmp_path / "runtime.zip"
-    _make_zip(archive, {"a.bin": 1000, "b.bin": 3000, "c.bin": 500})
-    ticks: list[tuple[int, int]] = []
-    binaries._extract(archive, tmp_path / "out",
-                      progress=lambda d, t: ticks.append((d, t)))
-    assert len(ticks) == 3
-    total = 4500
-    assert all(t == total for _, t in ticks)
-    assert [d for d, _ in ticks] == sorted(d for d, _ in ticks)
-    assert ticks[-1][0] == total
-    assert (tmp_path / "out" / "b.bin").stat().st_size == 3000
-
-
-def test_download_ticks_with_content_length(tmp_path, monkeypatch):
-    payload = b"y" * (3 << 20)  # 3 MiB -> several 1 MiB chunks
-
-    class _Resp(io.BytesIO):
-        headers = {"Content-Length": str(len(payload))}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(binaries.urllib.request, "urlopen",
-                        lambda url, timeout=0: _Resp(payload))
-    ticks: list[tuple[int, int]] = []
-    dest = tmp_path / "asset.zip"
-    binaries._download("http://x/asset.zip", dest,
-                       progress=lambda d, t: ticks.append((d, t)))
-    assert dest.read_bytes() == payload
-    assert len(ticks) >= 3
-    assert ticks[-1] == (len(payload), len(payload))
-
-
-def test_ensure_runtime_installed_forwards_staged_progress(tmp_path, monkeypatch):
-    """The full install path emits download -> verify -> extract stages
-    (per asset) and a final verify, all through one callback."""
-    monkeypatch.setattr(binaries, "runtimes_root", lambda: tmp_path)
-
-    class _Plan:
-        assets = ["a.zip", "b.zip"]
-        backend = "cuda"
-        install_dir = tmp_path / "b1" / "cuda"
-
-    monkeypatch.setattr(binaries, "resolve_assets", lambda tag, backend: _Plan())
-    monkeypatch.setattr(binaries, "verify_install", lambda d, t: "ok")
-
-    def _fake_download(url, dest, progress=None):
-        _make_zip(dest, {"f.bin": 2048})
-        if progress is not None:
-            progress(1024, 2048)
-            progress(2048, 2048)
-
-    monkeypatch.setattr(binaries, "_download", _fake_download)
-
-    events: list[tuple[str, str]] = []
-    binaries.ensure_runtime_installed(
-        "b1", "cuda",
-        progress=lambda stage, d, t, label: events.append((stage, label)))
-
-    stages = [s for s, _ in events]
-    assert "download" in stages and "extract" in stages and "verify" in stages
-    # Two assets -> per-asset labels on the slow stages.
-    assert ("download", "1/2") in events and ("download", "2/2") in events
-    assert ("extract", "1/2") in events and ("extract", "2/2") in events
-    # Stage order per asset: download before extract.
-    assert stages.index("download") < stages.index("extract")
 
 
 def test_progress_hook_translates_stages_to_job_fields():
@@ -112,13 +30,17 @@ def test_progress_hook_translates_stages_to_job_fields():
     hook("download", 100 << 20, 100 << 20, "1/2")
     assert job["done_bytes"] == 100 << 20
 
-    hook("extract", 10, 100, "")
-    assert job["phase"] in ("downloading-runtime", "unpacking-runtime")
+    # pm's unpack stage maps to the unpacking phase. (Terminal tick: the
+    # throttle drops non-terminal updates inside its window.)
+    hook("unpack", 100, 100, "2/2")
+    assert job["phase"] == "unpacking-runtime"
+    assert "2/2" in job["detail"]
 
+    # An indeterminate download (no Content-Length -> total 0) must not
+    # read as a stuck 0% bar.
     job2 = _job("runtime-install", "x")
     hook2 = _runtime_progress_hook(job2)
-    hook2("extract", 100, 100, "")
-    assert job2["phase"] == "unpacking-runtime"
-    hook2("verify", 0, 0, "")
-    assert job2["phase"] == "verifying-runtime"
-    assert job2["total_bytes"] is None  # indeterminate bar, not a stuck 0%
+    hook2("download", 4 << 20, 0, "")
+    assert job2["phase"] == "downloading-runtime"
+    assert job2["total_bytes"] is None
+    assert job2["done_bytes"] == 4 << 20
