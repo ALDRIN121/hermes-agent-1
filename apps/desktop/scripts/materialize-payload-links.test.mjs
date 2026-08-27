@@ -24,7 +24,7 @@ test('findPackedPayload locates the mac nested payload', () => {
   }
 })
 
-test('relativizePayloadLinks rewrites an absolute in-payload symlink to relative', () => {
+test('relativizePayloadLinks rewrites an absolute build-staging symlink to a payload-relative one', () => {
   if (process.platform === 'win32') return
   const root = tempRoot()
   try {
@@ -35,8 +35,11 @@ test('relativizePayloadLinks rewrites an absolute in-payload symlink to relative
     const real = path.join(store, 'python3.11')
     fs.writeFileSync(real, 'interpreter-bytes')
     const link = path.join(venv, 'python3')
-    // The absolute form uv --relocatable writes on POSIX.
-    fs.symlinkSync(real, link)
+    // The absolute build-staging form uv --relocatable writes: points at
+    // build/agent-payload/tools/... which does NOT exist here — but the
+    // store entry it names (tools/python/bin/python3.11) DOES exist in the
+    // payload root, which is what the rewrite keys on.
+    fs.symlinkSync('/somewhere/build/agent-payload/tools/python/bin/python3.11', link)
     assert.equal(fs.lstatSync(link).isSymbolicLink(), true)
 
     const n = relativizePayloadLinks(root)
@@ -51,17 +54,28 @@ test('relativizePayloadLinks rewrites an absolute in-payload symlink to relative
   }
 })
 
-test('relativizePayloadLinks throws when a symlink escapes the payload', () => {
+test('relativizePayloadLinks throws when the named store entry is missing from the payload', () => {
   if (process.platform === 'win32') return
   const root = tempRoot()
   try {
-    const outside = path.join(os.tmpdir(), `hermes-outside-${Date.now()}`)
-    fs.mkdirSync(outside, { recursive: true })
-    fs.writeFileSync(path.join(outside, 'python3.11'), 'x')
     const venv = path.join(root, 'venv', 'bin')
     fs.mkdirSync(venv, { recursive: true })
-    fs.symlinkSync(path.join(outside, 'python3.11'), path.join(venv, 'python3'))
-    assert.throws(() => relativizePayloadLinks(root), /outside the payload/)
+    // Names tools/python/... but no such entry exists under the payload.
+    fs.symlinkSync('/somewhere/build/agent-payload/tools/python/bin/python3.11', path.join(venv, 'python3'))
+    assert.throws(() => relativizePayloadLinks(root), /store entry .* is not present in the payload/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('relativizePayloadLinks throws when the target does not name a store entry', () => {
+  if (process.platform === 'win32') return
+  const root = tempRoot()
+  try {
+    const venv = path.join(root, 'venv', 'bin')
+    fs.mkdirSync(venv, { recursive: true })
+    fs.symlinkSync('/usr/bin/python3.11', path.join(venv, 'python3'))
+    assert.throws(() => relativizePayloadLinks(root), /does not name a store entry/)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

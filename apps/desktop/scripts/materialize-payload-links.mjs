@@ -60,14 +60,22 @@ export function stripFetchCache(root) {
 
 /**
  * Rewrite payload-internal absolute symlinks under venv/bin to RELATIVE
- * ones. Returns the count rewritten. Throws if a symlink's target escapes
- * the payload (the venv must never reference the build machine).
+ * ones. Returns the count rewritten.
+ *
+ * The link's current target is the BUILD staging path (build/agent-payload/
+ * tools/<entry>/bin/python3) — it must not be shipped verbatim (it dangles
+ * on the user's machine). The store lives INSIDE the payload at
+ * <payload>/tools/<entry>/..., so the link is rewritten to point at the
+ * payload's own store tree, relative to venv/bin. Throws only if the
+ * store entry the link names does not exist in the payload at all (a
+ * genuinely broken bundle).
  */
 export function relativizePayloadLinks(root) {
   if (!root || !fs.existsSync(root)) return 0
   const bin = path.join(root, 'venv', 'bin')
   if (!fs.existsSync(bin)) return 0
   const payloadRoot = path.resolve(root)
+  const toolsDir = path.join(payloadRoot, 'tools')
   let count = 0
   let entries
   try {
@@ -90,16 +98,23 @@ export function relativizePayloadLinks(root) {
     } catch {
       continue
     }
-    const absTarget = path.resolve(bin, target)
-    // The target must live inside the payload (resources/agent-payload).
-    if (absTarget !== payloadRoot && !absTarget.startsWith(payloadRoot + path.sep)) {
+    // The tail of the target (tools/<entry>/bin/python3) is what names the
+    // store entry; it must exist inside THIS payload's tools/.
+    const m = target.match(/(?:^|\/)tools\/(.+)$/)
+    if (!m) {
       throw new Error(
-        `venv/bin/${ent.name} -> ${target} points outside the payload (${absTarget}); ` +
-        'a bundled venv must never reference the build machine',
+        `venv/bin/${ent.name} -> ${target} does not name a store entry (tools/<entry>/...); ` +
+        'a bundled venv must reference the payload store',
       )
     }
-    const rel = path.relative(bin, absTarget)
-    // Already-relative or already-correct: skip.
+    const inPayload = path.join(toolsDir, m[1])
+    if (!fs.existsSync(inPayload)) {
+      throw new Error(
+        `venv/bin/${ent.name} -> ${target}: store entry ${m[1]} is not present in the payload ` +
+        `(${inPayload}); a bundled venv must reference the payload store`,
+      )
+    }
+    const rel = path.relative(bin, inPayload)
     if (target === rel) continue
     fs.unlinkSync(p)
     fs.symlinkSync(rel, p)
