@@ -26,7 +26,9 @@ import subprocess
 
 
 _VERSION_LINE = re.compile(r"^version:\s+(?P<rest>.+)$", re.MULTILINE)
-_SHA_BRACKET = re.compile(r"\[(?P<sha>[^\]]+)\]\s*$")
+# The stamp-first version line is "X.Y.Z [<sha>] (YYYY-MM-DD)" — the sha
+# bracket may be followed by the build-date suffix.
+_SHA_BRACKET = re.compile(r"\[(?P<sha>[^\]]+)\]")
 
 
 def _run_dump(image: str) -> str:

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
-  PLACEHOLDER_FEED_BASE_URL,
   applyDarwinUpdate,
+  PLACEHOLDER_FEED_BASE_URL,
   applyWin32Update,
   checkWin32Update,
   describeFeedCheck,
