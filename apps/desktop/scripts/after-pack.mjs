@@ -43,6 +43,19 @@ export default async function afterPack(context) {
     }
     return
   }
+  if (platform === 'linux') {
+    // Linux has no codesign, but it shares darwin's relocation problem: the
+    // relocatable venv's bin/python* are absolute symlinks onto the build
+    // runner's store interpreter, so they dangle once the unpacked tree is
+    // moved (first-boot smoke, or a user installing to a different path).
+    // Materialize them into real copies so the venv is self-contained.
+    const payload = findPackedPayload(context.appOutDir, platform)
+    if (payload) {
+      const n = materializePayloadLinks(payload)
+      console.log(`[after-pack] materialized ${n} payload links so the relocatable venv survives relocation`)
+    }
+    return
+  }
   if (platform !== 'win32') {
     return
   }
