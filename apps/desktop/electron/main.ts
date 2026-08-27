@@ -4652,12 +4652,19 @@ function resolveHermesBackend(backendArgs) {
       rememberLog('[payload] repair requested on a bundled install; the payload is read-only — ignoring')
     }
 
+    // Bundled builds run the STORE python (self-relative, no pyvenv.cfg
+    // write — works on the read-only MSIX payload) with PYTHONPATH aimed at
+    // the venv site-packages where the project deps are installed.
     return {
       kind: 'python',
       label: `bundled payload at ${payload.root}`,
-      command: payload.venvPython,
+      command: payload.storePython,
       args: ['-m', 'hermes_cli.main', ...backendArgs],
-      env: { ...buildDesktopBackendEnv(), HERMES_RUNTIME_DIR: payload.toolsDir },
+      env: {
+        ...buildDesktopBackendEnv(),
+        HERMES_RUNTIME_DIR: payload.toolsDir,
+        PYTHONPATH: payload.sitePackages
+      },
       root: payload.repoDir,
       bootstrap: false,
       shell: false

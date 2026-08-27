@@ -23,11 +23,19 @@ function writePayload(
   fs.mkdirSync(path.join(dir, 'hermes-agent'), { recursive: true })
   fs.mkdirSync(path.join(dir, 'tools', 'python-3.11.16-win32-x64'), { recursive: true })
 
-  const scripts = isWindows ? path.join(dir, 'venv', 'Scripts') : path.join(dir, 'venv', 'bin')
+  // Store python (win: python.exe at the entry root; posix: bin/python3).
+  if (isWindows) {
+    fs.writeFileSync(path.join(dir, 'tools', 'python-3.11.16-win32-x64', 'python.exe'), '')
+  } else {
+    fs.mkdirSync(path.join(dir, 'tools', 'python-3.11.16-win32-x64', 'bin'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'tools', 'python-3.11.16-win32-x64', 'bin', 'python3'), '')
+  }
 
-  fs.mkdirSync(scripts, { recursive: true })
-  fs.writeFileSync(path.join(scripts, isWindows ? 'python.exe' : 'python'), '')
-  fs.writeFileSync(path.join(dir, 'venv', 'pyvenv.cfg'), 'home = C:\\ci\\build\\python\nversion_info = 3.11.16\n')
+  // Venv site-packages (where the project deps are installed).
+  const sp = isWindows
+    ? path.join(dir, 'venv', 'Lib', 'site-packages')
+    : path.join(dir, 'venv', 'lib', 'python3.11', 'site-packages')
+  fs.mkdirSync(sp, { recursive: true })
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest))
   fs.writeFileSync(
     path.join(dir, 'tools', 'facts.json'),
@@ -54,7 +62,7 @@ const fsDeps = {
   }
 }
 
-test('resolvePayload finds a complete payload', () => {
+test('resolvePayload finds a complete payload (store python + venv site-packages)', () => {
   const root = tmpdir()
 
   writePayload(root)
@@ -63,10 +71,23 @@ test('resolvePayload finds a complete payload', () => {
 
   assert.ok(payload)
   assert.equal(payload.repoDir, path.join(root, 'agent-payload', 'hermes-agent'))
-  assert.ok(payload.venvPython.endsWith(path.join('Scripts', 'python.exe')))
+  assert.ok(payload.storePython.endsWith(path.join('tools', 'python-3.11.16-win32-x64', 'python.exe')))
+  assert.ok(payload.sitePackages.endsWith(path.join('venv', 'Lib', 'site-packages')))
 })
 
-test('resolvePayload returns null without a manifest, for external stubs, and for a broken venv', () => {
+test('resolvePayload resolves the posix store python + site-packages layout', () => {
+  const root = tmpdir()
+
+  writePayload(root, { isWindows: false })
+
+  const payload = resolvePayload(root, { ...fsDeps, isWindows: false })
+
+  assert.ok(payload)
+  assert.ok(payload.storePython.endsWith(path.join('tools', 'python-3.11.16-win32-x64', 'bin', 'python3')))
+  assert.ok(payload.sitePackages.endsWith(path.join('venv', 'lib', 'python3.11', 'site-packages')))
+})
+
+test('resolvePayload returns null without a manifest, for external stubs, and for a broken payload', () => {
   assert.equal(resolvePayload(tmpdir(), { ...fsDeps, isWindows: true }), null)
   assert.equal(resolvePayload(undefined, { ...fsDeps, isWindows: true }), null)
 
@@ -82,35 +103,28 @@ test('resolvePayload returns null without a manifest, for external stubs, and fo
   assert.equal(resolvePayload(brokenRoot, { ...fsDeps, isWindows: true }), null)
 })
 
-test('adoptPayloadVenv rewrites home from facts.json and is idempotent', () => {
+test('adoptPayloadVenv verifies store python + site-packages without any cfg write', () => {
   const root = tmpdir()
   const dir = writePayload(root)
   const payload = resolvePayload(root, { ...fsDeps, isWindows: true })
 
   assert.ok(payload)
+  // Bundled builds run the store python directly — there is NO pyvenv.cfg
+  // write (the payload may be read-only, e.g. MSIX). The cfg, if present,
+  // is left untouched.
+  fs.writeFileSync(path.join(dir, 'venv', 'pyvenv.cfg'), 'home = C:\\ci\\build\\python\nversion_info = 3.11.16\n')
   assert.equal(adoptPayloadVenv(payload, { isWindows: true }), true)
-
   const text = fs.readFileSync(path.join(dir, 'venv', 'pyvenv.cfg'), 'utf8')
+  assert.ok(text.includes('C:\\ci\\build'), 'the shipped cfg is not rewritten')
 
-  assert.ok(text.includes(path.join(dir, 'tools', 'python-3.11.16-win32-x64')))
-  assert.ok(!text.includes('C:\\ci\\build'))
-  assert.ok(text.includes('version_info = 3.11.16'), 'other lines survive')
-
-  // second call: already-correct home is left alone and still reports usable
+  // second call: still reports usable
   assert.equal(adoptPayloadVenv(payload, { isWindows: true }), true)
 })
 
-test('adoptPayloadVenv fails closed without facts or python entry', () => {
-  const root = tmpdir()
-  const dir = writePayload(root)
-
-  fs.writeFileSync(path.join(dir, 'tools', 'facts.json'), JSON.stringify({ packages: {} }))
-
-  const payload = resolvePayload(root, { ...fsDeps, isWindows: true })
-
-  assert.ok(payload)
-  assert.equal(adoptPayloadVenv(payload, { isWindows: true }), false)
-})
+// adoptPayloadVenv is now a pure presence-verify; resolvePayload's own
+// existence checks already reject a payload missing the store python or
+// site-packages (covered above), so there is no separate fail-closed path
+// to assert at this layer.
 
 // ─── update channel helpers ─────────────────────────────────────────
 

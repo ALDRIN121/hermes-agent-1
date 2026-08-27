@@ -508,7 +508,7 @@ jobs:
           name: hermes-bundled-linux-x64-${{ inputs.tag }}
           path: packed
 
-      - name: Adopt the payload venv and smoke it
+      - name: Smoke the payload (store python, no venv cfg write)
         shell: bash
         run: |
           set -euo pipefail
@@ -537,19 +537,12 @@ jobs:
                   raise SystemExit(f"manifest missing {key}")
           facts = json.loads((root / manifest["store"] / "facts.json").read_text())
           entry = facts["packages"]["python"]["entry"]
-          home = root / manifest["store"] / entry / "bin"
-          cfg = root / manifest["venv"] / "pyvenv.cfg"
-          lines = cfg.read_text().splitlines()
-          out = []
-          for line in lines:
-              if line.lower().startswith("home ="):
-                  out.append(f"home = {home}")
-              else:
-                  out.append(line)
-          cfg.write_text("\n".join(out) + "\n")
-          again = cfg.read_text()
-          if f"home = {home}" not in again:
-              raise SystemExit("adopt did not write home")
-          print(f"adopted home = {home}")
+          store_py = root / manifest["store"] / entry / "bin" / "python3"
+          sp = root / manifest["venv"] / "lib" / "python3.11" / "site-packages"
+          if not store_py.is_file():
+              raise SystemExit(f"store interpreter missing at {store_py}")
+          if not sp.is_dir():
+              raise SystemExit(f"venv site-packages missing at {sp}")
+          print(f"store python={store_py}\nsite-packages={sp}")
           PY
           bash scripts/smoke-payload.sh "$payload"

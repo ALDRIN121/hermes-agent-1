@@ -277,6 +277,57 @@ if (process.platform === 'darwin') {
   console.log(`[build-bundled] relativized ${n} payload links so codesign can sign each path once`)
 }
 
+// ── 5b. build + stage the self-relative CLI shim (apps/desktop/shim) ────────
+// The bundled payload's CLI entrypoints are a zero-dep Rust trampoline
+// (hermes / hermes-agent / hermes-acp), not the venv console-script shims:
+// a bundled artifact is sealed + signed, so the distlib launchers (which
+// assemble at install time with an absolute interpreter path) can never
+// exist there. The shim reads bin/shim-target.txt (bin-relative payload
+// CPython path, forward slashes) and execs `python -m <module>`, so it is
+// fully self-relative and works on read-only installs (MSIX) with no venv
+// cfg write. The venv is still created by pm bundle but bundled builds do
+// NOT use it.
+function stageCliShims(outDir, pythonRelPath) {
+  const shimCrate = path.join(REPO_ROOT, 'apps', 'desktop', 'shim')
+  run('cargo', ['build', '--release', '--quiet'], { cwd: shimCrate })
+  const suffix = process.platform === 'win32' ? '.exe' : ''
+  const built = path.join(shimCrate, 'target', 'release', `hermes-shim${suffix}`)
+  if (!fs.existsSync(built)) {
+    fail(`cargo build produced no shim at ${built}`)
+  }
+  const binDir = path.join(outDir, 'bin')
+  fs.rmSync(binDir, { recursive: true, force: true })
+  fs.mkdirSync(binDir, { recursive: true })
+  const names = ['hermes', 'hermes-agent', 'hermes-acp'].map((n) => n + suffix)
+  for (const name of names) {
+    fs.copyFileSync(built, path.join(binDir, name))
+    fs.chmodSync(path.join(binDir, name), 0o755)
+  }
+  // Sidecar: bin-relative path to the payload CPython, forward slashes.
+  const rel = `../${pythonRelPath.split(path.sep).join('/')}`
+  if (path.isAbsolute(rel) || rel.includes('\\')) {
+    fail(`shim sidecar needs a forward-slash payload-relative python path, got: ${rel}`)
+  }
+  fs.writeFileSync(path.join(binDir, 'shim-target.txt'), `${rel}\n`)
+  console.log(`[build-bundled] staged CLI shims (${names.join(', ')}) → ${binDir} (target ${rel})`)
+}
+
+const pythonEntry = (() => {
+  try {
+    const facts = JSON.parse(fs.readFileSync(path.join(PAYLOAD_DIR, 'tools', 'facts.json'), 'utf8'))
+    return facts.packages?.python?.entry
+  } catch {
+    return undefined
+  }
+})()
+if (!pythonEntry) {
+  fail('payload facts.json has no python entry — cannot stage the CLI shims')
+}
+// The shim's python is the store interpreter (platform layout: bin/python3
+// on posix, python.exe on win32).
+const pythonShimTarget = path.join('tools', pythonEntry, process.platform === 'win32' ? 'python.exe' : 'bin', process.platform === 'win32' ? '' : 'python3')
+stageCliShims(PAYLOAD_DIR, pythonShimTarget.replace(/\\/g, '/').replace(/\/+$/, ''))
+
 // ── 6. desktop build + package ──────────────────────────────────────────────
 
 const env = {

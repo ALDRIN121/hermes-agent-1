@@ -25,7 +25,10 @@ export interface PayloadInfo {
   root: string
   repoDir: string
   toolsDir: string
-  venvPython: string
+  /** The payload's own CPython (tools/<python-entry>/python(.exe)). */
+  storePython: string
+  /** The venv's site-packages (Lib/site-packages on win, lib/python3.11/site-packages on posix). */
+  sitePackages: string
 }
 
 export function resolvePayload(
@@ -68,71 +71,49 @@ export function resolvePayload(
   const repoDir = path.join(root, manifest.repo)
   const toolsDir = path.join(root, manifest.store)
   const venvDir = path.join(root, manifest.venv)
-  const venvPython = deps.isWindows ? path.join(venvDir, 'Scripts', 'python.exe') : path.join(venvDir, 'bin', 'python')
 
-  if (!deps.directoryExists(repoDir) || !deps.fileExists(venvPython)) {
+  // The store CPython + the venv's site-packages. Bundled builds run the
+  // STORE python (self-relative, no pyvenv.cfg write — works on read-only
+  // MSIX) with PYTHONPATH pointing at the venv site-packages (where the
+  // project deps are installed). The venv python itself is NOT used in
+  // bundled builds.
+  let storePython = ''
+  let sitePackages = ''
+  try {
+    const facts = JSON.parse(fs.readFileSync(path.join(toolsDir, 'facts.json'), 'utf8'))
+    const entry = facts?.packages?.python?.entry
+    if (typeof entry === 'string') {
+      storePython = path.join(toolsDir, entry, deps.isWindows ? 'python.exe' : 'bin', deps.isWindows ? '' : 'python3')
+      sitePackages = deps.isWindows
+        ? path.join(venvDir, 'Lib', 'site-packages')
+        : path.join(venvDir, 'lib', `python${process.env.PYTHON_VER || '3.11'}`, 'site-packages')
+    }
+  } catch {
+    // fall through to the existence checks below
+  }
+
+  if (!deps.directoryExists(repoDir) || !deps.fileExists(storePython) || !deps.directoryExists(sitePackages)) {
     return null
   }
 
-  return { root, repoDir, toolsDir, venvPython }
+  return { root, repoDir, toolsDir, storePython, sitePackages }
 }
 
 /**
- * Re-point the payload venv's pyvenv.cfg at the shipped interpreter.
- * Reads the python entry from the payload's facts.json; idempotent (a
- * matching `home` line is left untouched). Returns true when the cfg is
- * usable after the call.
+ * Verify the payload is usable — the store python + venv site-packages
+ * resolve. NO pyvenv.cfg write: bundled builds run the store python
+ * directly (self-relative, works on read-only MSIX), so there is nothing
+ * to re-point. Returns true when the payload can boot.
  */
 export function adoptPayloadVenv(
   payload: PayloadInfo,
   deps: { isWindows: boolean; log?: (m: string) => void }
 ): boolean {
-  const cfgPath = path.join(path.dirname(path.dirname(payload.venvPython)), 'pyvenv.cfg')
-
-  let facts: any
-
-  try {
-    facts = JSON.parse(fs.readFileSync(path.join(payload.toolsDir, 'facts.json'), 'utf8'))
-  } catch {
+  if (!payload.storePython || !payload.sitePackages) {
+    deps.log?.('[payload] missing store python or site-packages')
     return false
   }
-
-  const pythonFact = facts?.packages?.python
-
-  if (!pythonFact?.entry) {
-    return false
-  }
-
-  const entry = path.join(payload.toolsDir, pythonFact.entry)
-  const home = deps.isWindows ? entry : path.join(entry, 'bin')
-
-  let text: string
-
-  try {
-    text = fs.readFileSync(cfgPath, 'utf8')
-  } catch {
-    return false
-  }
-
-  const lines = text.split(/\r?\n/)
-  const current = lines.find(line => line.toLowerCase().startsWith('home ='))
-
-  if (current && current.slice('home ='.length).trim() === home) {
-    return true
-  }
-
-  const fixed = lines.map(line => (line.toLowerCase().startsWith('home =') ? `home = ${home}` : line))
-
-  try {
-    fs.writeFileSync(cfgPath, fixed.join('\n'), 'utf8')
-    deps.log?.(`[payload] re-pointed venv home at ${home}`)
-
-    return true
-  } catch (error: any) {
-    deps.log?.(`[payload] could not adopt venv: ${error.message}`)
-
-    return false
-  }
+  return true
 }
 
 // ─── update channel ─────────────────────────────────────────────────────────
