@@ -59,16 +59,15 @@ export function stripFetchCache(root) {
 }
 
 /**
- * Rewrite payload-internal absolute symlinks under venv/bin to RELATIVE
- * ones. Returns the count rewritten.
+ * Rewrite payload venv/bin symlinks to RELATIVE targets that resolve
+ * inside the bundle. Returns the count rewritten.
  *
- * The link's current target is the BUILD staging path (build/agent-payload/
- * tools/<entry>/bin/python3) — it must not be shipped verbatim (it dangles
- * on the user's machine). The store lives INSIDE the payload at
- * <payload>/tools/<entry>/..., so the link is rewritten to point at the
- * payload's own store tree, relative to venv/bin. Throws only if the
- * store entry the link names does not exist in the payload at all (a
- * genuinely broken bundle).
+ * The single rule: a bundled venv's links must point at the payload's own
+ * store. Links whose target already resolves inside the payload are
+ * relativized (or left if already relative). Links whose target is the
+ * BUILD staging path (build/agent-payload/tools/<entry>/...) — which
+ * doesn't exist in the unpacked app — are rewritten to the matching
+ * store entry under <payload>/tools/. Anything else fails the build.
  */
 export function relativizePayloadLinks(root) {
   if (!root || !fs.existsSync(root)) return 0
@@ -98,23 +97,29 @@ export function relativizePayloadLinks(root) {
     } catch {
       continue
     }
-    // The tail of the target (tools/<entry>/bin/python3) is what names the
-    // store entry; it must exist inside THIS payload's tools/.
-    const m = target.match(/(?:^|\/)tools\/(.+)$/)
-    if (!m) {
-      throw new Error(
-        `venv/bin/${ent.name} -> ${target} does not name a store entry (tools/<entry>/...); ` +
-        'a bundled venv must reference the payload store',
-      )
+    const absTarget = path.resolve(bin, target)
+    const insidePayload = absTarget !== payloadRoot && absTarget.startsWith(payloadRoot + path.sep)
+    let resolvedTarget = absTarget
+    if (!insidePayload) {
+      // The BUILD staging form: build/agent-payload/tools/<entry>/... .
+      // The tail names a store entry that must exist inside THIS payload.
+      const m = target.match(/(?:^|\/)tools\/(.+)$/)
+      if (!m) {
+        throw new Error(
+          `venv/bin/${ent.name} -> ${target} points outside the payload and does not name ` +
+          'a store entry (tools/<entry>/...); a bundled venv must reference the payload store',
+        )
+      }
+      const inPayload = path.join(toolsDir, m[1])
+      if (!fs.existsSync(inPayload)) {
+        throw new Error(
+          `venv/bin/${ent.name} -> ${target}: store entry ${m[1]} is not present in the payload ` +
+          `(${inPayload}); a bundled venv must reference the payload store`,
+        )
+      }
+      resolvedTarget = inPayload
     }
-    const inPayload = path.join(toolsDir, m[1])
-    if (!fs.existsSync(inPayload)) {
-      throw new Error(
-        `venv/bin/${ent.name} -> ${target}: store entry ${m[1]} is not present in the payload ` +
-        `(${inPayload}); a bundled venv must reference the payload store`,
-      )
-    }
-    const rel = path.relative(bin, inPayload)
+    const rel = path.relative(bin, resolvedTarget)
     if (target === rel) continue
     fs.unlinkSync(p)
     fs.symlinkSync(rel, p)
