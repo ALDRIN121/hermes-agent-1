@@ -6,6 +6,15 @@
 // re-signing (Authenticode signatures embed a timestamp, not an expiry tied
 // to the build, so replaying a previously signed copy is exactly as valid).
 //
+// ONLY the MSIX package is signed. Windows install validation checks the
+// package signature (AppxSignature.p7x over AppxBlockMap.xml); inner files
+// are covered by the block-map hashes, NOT per-file Authenticode, so
+// signing Hermes.exe or any payload binary is wasted remote round-trips —
+// and signing one AFTER makeappx packs it would change its bytes and break
+// the block hash (0x80080205). electron-builder asks the hook to sign the
+// app exe and the .msix artifact alike; shouldSignFile() admits only the
+// latter.
+//
 // Wired from electron-builder.config.cjs as
 //   win.sign = { type: 'signtool', sign: './scripts/sign-cached.mjs', ... }
 // The Azure endpoint/account/profile do NOT ride through the config: this
@@ -23,6 +32,21 @@ import { contentHash, lookupSigned, storeSigned } from './sign-cache.mjs'
 
 const require = createRequire(import.meta.url)
 const desktopDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+
+// Artifacts that carry the only signature Windows validates for a packaged
+// app. A .msixbundle envelope is included for the single-invocation bundle
+// case (the envelope signature covers the inner .msix packages).
+const SIGNED_ARTIFACT_EXTENSIONS = ['.msix', '.msixbundle']
+
+/**
+ * Whether `file` is a signing target. Everything except the MSIX package is
+ * covered by the package's block-map hashes and must stay untouched —
+ * signing it after packaging would break the hash.
+ */
+export function shouldSignFile(file) {
+  const lower = file.toLowerCase()
+  return SIGNED_ARTIFACT_EXTENSIONS.some(ext => lower.endsWith(ext))
+}
 
 /**
  * Cache directory: HERMES_SIGN_CACHE (CI points this at a persisted
@@ -127,6 +151,11 @@ function azureManager(packager) {
  * @param {any} packager WinPackager
  */
 export default async function sign(configuration, packager) {
+  if (!shouldSignFile(configuration.path)) {
+    console.log(`[sign-cached] skip non-MSIX (covered by package block map): ${configuration.path}`)
+    return
+  }
+
   const mgr = await azureManager(packager)
   await signWithCache(configuration.path, resolveCacheDir(), () =>
     // signFileWithDlib reads only options.path (plus the manager's own

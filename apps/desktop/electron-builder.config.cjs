@@ -250,6 +250,8 @@ stageMsixAssets()
 
 // Azure Trusted Signing. The custom hook keeps signed bytes by their unsigned
 // hash. Rebuilds only send changed binaries to the remote signing service.
+// The hook signs ONLY the .msix (the package signature is all Windows
+// validates; inner binaries are covered by the block map and stay unsigned).
 const MACHO_MAGICS = new Set([
   0xfeedface,
   0xcefaedfe,

@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import { contentHash } from './sign-cache.mjs'
-import { resolveCacheDir, signWithCache } from './sign-cached.mjs'
+import { resolveCacheDir, shouldSignFile, signWithCache } from './sign-cached.mjs'
 
 const require = createRequire(import.meta.url)
 
@@ -97,6 +97,26 @@ test('resolveCacheDir defaults under apps/desktop/build/sign-cache', () => {
 
 test('resolveCacheDir honors HERMES_SIGN_CACHE', () => {
   assert.equal(resolveCacheDir({ HERMES_SIGN_CACHE: '/tmp/somewhere-else' }), '/tmp/somewhere-else')
+})
+
+test('shouldSignFile admits only .msix and .msixbundle artifacts', () => {
+  assert.equal(shouldSignFile('release/Hermes-0.17.0-win32-arm64.msix'), true)
+  assert.equal(shouldSignFile('release/Hermes-0.17.0-win32-x64.msix'), true)
+  assert.equal(shouldSignFile('release/Hermes-0.17.0-win32-arm64.msixbundle'), true)
+  // Case-insensitive — artifactName could emit .MSIX on some host.
+  assert.equal(shouldSignFile('release/Hermes-0.17.0-win32-arm64.MSIX'), true)
+})
+
+test('shouldSignFile rejects every non-package file the hook is asked to sign', () => {
+  // The app exe and any payload binary are covered by the package's block
+  // map — signing them is wasted round-trips and would break the hash if
+  // done after makeappx packs the package.
+  assert.equal(shouldSignFile('release/win-unpacked/Hermes.exe'), false)
+  assert.equal(shouldSignFile('C:/work/hermes-agent/release/win-unpacked/Hermes.exe'), false)
+  assert.equal(shouldSignFile('release/Hermes-0.17.0-win32-arm64.nsis.exe'), false)
+  assert.equal(shouldSignFile('release/Hermes-0.17.0-win32-arm64.msixupload'), false)
+  assert.equal(shouldSignFile('release/Hermes-0.17.0-win32-arm64.dll'), false)
+  assert.equal(shouldSignFile(''), false)
 })
 
 // ─── builder-bump tripwire ──────────────────────────────────────────────────
