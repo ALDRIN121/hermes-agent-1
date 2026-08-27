@@ -143,6 +143,8 @@ export interface Translations {
       back: string
       openLogs: string
       repairHint: string
+      reinstallApp: string
+      bundledReinstallHint: string
       remoteSignInHint: (signInLabel: string) => string
       signOutAndSignIn: string
       remoteFailureHint: string
@@ -2348,11 +2350,18 @@ export interface Translations {
     retryAfterRun: string
     setupChoiceTitle: string
     setupChoiceDesc: string
+    setupChoiceDescLocal: string
     connectExistingTitle: string
     connectExistingShort: string
     connectExistingDesc: string
     installLocalTitle: string
     installLocalDesc: string
+    useLocalTitle: string
+    useLocalDesc: string
+    bundledLocalDesc: string
+    bundledDamagedTitle: string
+    bundledDamagedDesc: string
+    reinstallApp: string
     localStartUnavailable: string
     remoteSetupTitle: string
     remoteSetupDesc: string

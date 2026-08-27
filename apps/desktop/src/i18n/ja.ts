@@ -100,6 +100,8 @@ export const ja = defineLocale({
       back: '戻る',
       openLogs: 'ログを開く',
       repairHint: '修復はインストーラーを再実行します。新しいマシンでは数分かかる場合があります。',
+      reinstallApp: 'アプリを再インストール',
+      bundledReinstallHint: 'このアプリには Hermes が含まれています。同梱ランタイムを復元するにはアプリを再インストールしてください。',
       remoteSignInHint: signInLabel =>
         `保存済みのリモートブラウザセッションからサインアウトし、${signInLabel}を開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。`,
       signOutAndSignIn: 'サインアウトして再サインイン',
@@ -2391,12 +2393,21 @@ export const ja = defineLocale({
     setupChoiceTitle: 'Hermes Desktop をセットアップ',
     setupChoiceDesc:
       'すでに実行している Hermes ゲートウェイに接続するか、このコンピューターに Hermes をローカルインストールします。',
+    setupChoiceDescLocal:
+      'すでに実行している Hermes ゲートウェイに接続するか、このコンピューターにある Hermes を使用します。',
     connectExistingTitle: '既存の Hermes に接続',
     connectExistingShort: '既存環境に接続',
     connectExistingDesc:
       'セッショントークンまたはブラウザーサインインでリモートバックエンドを使用します。ローカルインストールは開始されません。',
     installLocalTitle: 'Hermes をローカルにインストール',
     installLocalDesc: 'Hermes をダウンロードし、Python 環境を作成して、このコンピューターでバックエンドを実行します。',
+    useLocalTitle: 'このコンピューターの Hermes を使用',
+    useLocalDesc: 'Hermes はすでにここにインストールされています。今すぐ開始します — ダウンロードは発生しません。',
+    bundledLocalDesc: 'Hermes はこのアプリに同梱されています。今すぐ開始します — ダウンロードは発生しません。',
+    bundledDamagedTitle: 'このアプリに同梱された Hermes を使用',
+    bundledDamagedDesc:
+      'このアプリには Hermes が含まれていますが、ランタイムファイルが欠落しているか破損しています。Hermes Desktop を再インストールして復元してください。',
+    reinstallApp: 'アプリを再インストール',
     localStartUnavailable:
       'ローカルインストールを開始できません。Hermes Desktop を再起動して、もう一度お試しください。',
     remoteSetupTitle: '既存の Hermes に接続',

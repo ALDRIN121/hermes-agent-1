@@ -5,7 +5,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { adoptPayloadVenv, resolvePayload } from './payload-backend'
+import { adoptPayloadVenv, isBundledInstall, resolvePayload } from './payload-backend'
 
 function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'payload-test-'))
@@ -125,6 +125,48 @@ test('adoptPayloadVenv verifies store python + site-packages without any cfg wri
 // existence checks already reject a payload missing the store python or
 // site-packages (covered above), so there is no separate fail-closed path
 // to assert at this layer.
+
+test('isBundledInstall is true for a real payload manifest', () => {
+  const root = tmpdir()
+
+  writePayload(root)
+
+  assert.equal(isBundledInstall(root, fsDeps), true)
+})
+
+test('isBundledInstall is false for the external stub and for missing manifests', () => {
+  const externalRoot = tmpdir()
+
+  writePayload(externalRoot, { manifest: { schema: 1, external: true } })
+  assert.equal(isBundledInstall(externalRoot, fsDeps), false)
+
+  assert.equal(isBundledInstall(tmpdir(), fsDeps), false)
+  assert.equal(isBundledInstall(undefined, fsDeps), false)
+})
+
+test('isBundledInstall is true even when the payload is damaged (never-install guard)', () => {
+  const root = tmpdir()
+  const dir = writePayload(root)
+
+  // A broken payload must still read as bundled: isBundledInstall is the
+  // guard that REFUSES the installer, and a damaged bundle is exactly the
+  // case where the installer must not run.
+  fs.rmSync(path.join(dir, 'venv'), { recursive: true })
+  fs.rmSync(path.join(dir, 'tools', 'python-3.11.16-win32-x64'), { recursive: true })
+
+  assert.equal(resolvePayload(root, { ...fsDeps, isWindows: true }), null)
+  assert.equal(isBundledInstall(root, fsDeps), true)
+})
+
+test('isBundledInstall is false for a malformed manifest', () => {
+  const root = tmpdir()
+  const dir = path.join(root, 'agent-payload')
+
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'manifest.json'), 'not json {')
+
+  assert.equal(isBundledInstall(root, fsDeps), false)
+})
 
 // ─── update channel helpers ─────────────────────────────────────────
 

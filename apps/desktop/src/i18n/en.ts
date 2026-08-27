@@ -100,6 +100,8 @@ export const en: Translations = {
       back: 'Back',
       openLogs: 'Open logs',
       repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
+      reinstallApp: 'Reinstall the app',
+      bundledReinstallHint: 'This app includes Hermes. Reinstall the app to restore its bundled runtime.',
       remoteSignInHint: signInLabel =>
         `Signs out of the saved remote browser session, then opens ${signInLabel}. Use local gateway to switch to the bundled backend instead.`,
       signOutAndSignIn: 'Sign out & sign in',
@@ -2764,11 +2766,20 @@ export const en: Translations = {
     setupChoiceTitle: 'Set up Hermes Desktop',
     setupChoiceDesc:
       'Connect this app to a Hermes gateway you already run, or install Hermes locally on this computer.',
+    setupChoiceDescLocal:
+      'Connect this app to a Hermes gateway you already run, or use the Hermes already on this computer.',
     connectExistingTitle: 'Connect to existing Hermes',
     connectExistingShort: 'Connect existing',
     connectExistingDesc: 'Use a remote backend with a session token or browser sign-in. No local install will start.',
     installLocalTitle: 'Install Hermes locally',
     installLocalDesc: 'Download Hermes, create its Python environment, and run the backend on this computer.',
+    useLocalTitle: 'Use Hermes on this computer',
+    useLocalDesc: 'Hermes is already installed here. Start it now — nothing will be downloaded.',
+    bundledLocalDesc: 'Hermes is included with this app. Start it now — nothing will be downloaded.',
+    bundledDamagedTitle: 'Use Hermes bundled with this app',
+    bundledDamagedDesc:
+      'This app includes Hermes, but its runtime files are missing or damaged. Reinstall Hermes Desktop to restore it.',
+    reinstallApp: 'Reinstall the app',
     localStartUnavailable: 'Local installation could not start. Restart Hermes Desktop and try again.',
     remoteSetupTitle: 'Connect to existing Hermes',
     remoteSetupDesc: 'Enter your gateway URL. Hermes Desktop will detect whether it needs a token or browser sign-in.',

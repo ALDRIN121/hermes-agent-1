@@ -267,7 +267,7 @@ import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } fr
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
-import { adoptPayloadVenv, resolvePayload } from './payload-backend'
+import { adoptPayloadVenv, isBundledInstall, resolvePayload } from './payload-backend'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   buildRegistryProfileRoutes,
@@ -1879,7 +1879,8 @@ let bootstrapState = {
   startedAt: null,
   completedAt: null,
   setupChoice: null,
-  unsupportedPlatform: null
+  unsupportedPlatform: null,
+  bundled: false
 }
 
 let firstRunSetupGate = null
@@ -1934,10 +1935,13 @@ function broadcastBootstrapEvent(ev) {
     bootstrapState.setupChoice = ev.active
       ? {
           platform: ev.platform,
-          activeRoot: ev.activeRoot
+          activeRoot: ev.activeRoot,
+          local: ev.local || 'none',
+          bundled: Boolean(ev.bundled)
         }
       : null
     bootstrapState.unsupportedPlatform = null
+    bootstrapState.bundled = Boolean(ev.bundled)
   } else if (ev.type === 'dismissed') {
     resetBootstrapSnapshot()
   }
@@ -1969,7 +1973,8 @@ function resetBootstrapSnapshot() {
     startedAt: null,
     completedAt: null,
     setupChoice: null,
-    unsupportedPlatform: null
+    unsupportedPlatform: null,
+    bundled: false
   }
 }
 
@@ -1978,7 +1983,9 @@ function promptFirstRunSetupChoice(backend) {
     type: 'setup-choice',
     active: true,
     platform: backend.platform || process.platform,
-    activeRoot: backend.activeRoot || ACTIVE_HERMES_ROOT
+    activeRoot: backend.activeRoot || ACTIVE_HERMES_ROOT,
+    local: backend.local || 'none',
+    bundled: isBundledInstall(process.resourcesPath, { fileExists })
   })
 }
 
@@ -3976,6 +3983,16 @@ async function handOffWindowsBootstrapRecovery(reason) {
     return false
   }
 
+  // A bundled install does not own %LOCALAPPDATA%\hermes — the updater
+  // would try to heal a tree the app never created. The payload IS the
+  // runtime; recovery means reinstalling the app, not spawning the
+  // updater. (ensureRuntime's bundled guard also short-circuits before
+  // this call; this is the belt-and-suspenders check.)
+  if (isBundledInstall(process.resourcesPath, { fileExists })) {
+    rememberLog('[bootstrap] refusing updater recovery hand-off on a bundled install; reinstall the app')
+    return false
+  }
+
   const updater = resolveUpdaterBinary()
 
   if (!updater) {
@@ -4610,7 +4627,11 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
     env: buildDesktopBackendEnv(),
     root,
     bootstrap: Boolean(options.bootstrap),
-    shell: false
+    shell: false,
+    // A resolved local runtime — already on this machine (checkout or
+    // installed). The setup choice's local card reads this to offer the
+    // "use existing" variant instead of an install.
+    local: 'installed'
   }
 }
 
@@ -4630,7 +4651,8 @@ function createActiveBackend(backendArgs) {
     env: buildDesktopBackendEnv(),
     root: ACTIVE_HERMES_ROOT,
     bootstrap: true,
-    shell: false
+    shell: false,
+    local: 'installed'
   }
 }
 
@@ -4667,7 +4689,39 @@ function resolveHermesBackend(backendArgs) {
       },
       root: payload.repoDir,
       bootstrap: false,
-      shell: false
+      shell: false,
+      local: 'bundled'
+    }
+  }
+
+  // A bundled artifact that failed to resolve must NEVER fall through the
+  // ladder to bootstrap-needed: the payload IS the local Hermes, it is
+  // immutable (sealed at build time, often read-only MSIX), and running
+  // install.ps1 would download and install a SECOND, separate Hermes into
+  // the user's machine on top of one the app already carries. Skip ALL
+  // remaining local rungs — explicit dev overrides included; a developer
+  // who wants a checkout should run a non-bundled build
+  // (HERMES_DESKTOP_VARIANT unset → external stub → not bundled). The
+  // payload-healthy path above returns before this guard, so a working
+  // bundle is unaffected.
+  if (isBundledInstall(process.resourcesPath, { fileExists })) {
+    rememberLog(
+      '[bootstrap] bundled payload missing or damaged; REFUSING to run the installer — reinstall the app to restore the runtime'
+    )
+
+    return {
+      kind: 'bundled-unusable',
+      label: 'The Hermes runtime bundled with this app is missing or damaged; reinstall the app',
+      command: null,
+      args: backendArgs,
+      bootstrap: false,
+      env: {},
+      shell: false,
+      activeRoot: ACTIVE_HERMES_ROOT,
+      installStamp: INSTALL_STAMP,
+      isPackaged: IS_PACKAGED,
+      platform: process.platform,
+      local: 'bundled-damaged'
     }
   }
 
@@ -4782,7 +4836,8 @@ function resolveHermesBackend(backendArgs) {
           bootstrap: false,
           env: {},
           kind: 'command',
-          shell: shellForProbe
+          shell: shellForProbe,
+          local: 'installed'
         }
       }
 
@@ -4814,7 +4869,8 @@ function resolveHermesBackend(backendArgs) {
         args: ['-m', 'hermes_cli.main', ...backendArgs],
         bootstrap: false,
         env: {},
-        shell: false
+        shell: false,
+        local: 'installed'
       }
     }
 
@@ -4843,7 +4899,8 @@ function resolveHermesBackend(backendArgs) {
     activeRoot: ACTIVE_HERMES_ROOT,
     installStamp: INSTALL_STAMP, // may be null in dev
     isPackaged: IS_PACKAGED,
-    platform: process.platform
+    platform: process.platform,
+    local: 'none'
   }
 }
 
@@ -4863,6 +4920,39 @@ async function ensureRuntime(backend) {
   // (renderer window isn't created until later in startBackend). Phase 1E
   // will rewire startup to spawn the window first and route bootstrap events
   // to a renderer-side install overlay.
+  //
+  // Defense in depth: a bundled artifact must NEVER reach this branch. The
+  // resolver's bundled-unusable sentinel is the primary guard; this check
+  // covers any future path that produces bootstrap-needed on a bundled
+  // install (e.g. a stale repair flag racing the resolver).
+  if (backend.kind === 'bootstrap-needed' && isBundledInstall(process.resourcesPath, { fileExists })) {
+    rememberLog('[bootstrap] REFUSING installer on a bundled install; payload missing or damaged — reinstall the app')
+
+    const bundledError: Error & { isBootstrapFailure?: boolean } = new Error(
+      'This app bundles its own Hermes runtime, but the runtime files are missing or damaged. Reinstall Hermes Desktop to restore it.'
+    )
+
+    bundledError.isBootstrapFailure = true
+    bootstrapFailure = bundledError
+    throw bundledError
+  }
+
+  // A bundled install whose payload failed to resolve. The payload is the
+  // ONLY local runtime a bundle has (immutable, sealed at build time), so
+  // there is nothing to install or repair here — reinstall the app. The
+  // setup gate still lets the user connect to a REMOTE Hermes.
+  if (backend.kind === 'bundled-unusable') {
+    rememberLog('[bootstrap] bundled payload is unusable; no installer path exists — reinstall the app')
+
+    const bundledError: Error & { isBootstrapFailure?: boolean } = new Error(
+      'This app bundles its own Hermes runtime, but the runtime files are missing or damaged. Reinstall Hermes Desktop to restore it.'
+    )
+
+    bundledError.isBootstrapFailure = true
+    bootstrapFailure = bundledError
+    throw bundledError
+  }
+
   if (backend.kind === 'bootstrap-needed') {
     rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
 
@@ -14525,6 +14615,17 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:repair', async () => {
+  // A bundled install's payload is immutable and sealed at build time —
+  // "repair" would re-run the installer against a separate
+  // %LOCALAPPDATA%\hermes tree the app doesn't own. The only repair for a
+  // damaged bundle is reinstalling the app itself. Refuse without touching
+  // bootstrapRepairRequested so a stale renderer can't drive an install.
+  if (isBundledInstall(process.resourcesPath, { fileExists })) {
+    rememberLog('[bootstrap] repair refused on a bundled install; repair means reinstalling the app')
+
+    return { ok: false, error: 'bundled-immutable' }
+  }
+
   // Forceful repair: force the next startHermes() through the full installer
   // (refreshing a broken/partial venv) and clear any latched failure + live
   // connection. The renderer reloads afterwards to re-drive the boot flow.

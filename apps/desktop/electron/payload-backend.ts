@@ -100,6 +100,37 @@ export function resolvePayload(
 }
 
 /**
+ * "Is this artifact a bundled install?" — the app ships its own Hermes payload.
+ * True whenever resources/agent-payload/manifest.json exists and is not the
+ * external stub (before-build.mjs writes {schema:1, external:true} for
+ * non-bundled builds). Deliberately does NOT verify payload usability: a
+ * damaged bundle still must never install — callers use this to refuse the
+ * installer, not to decide the payload can boot.
+ */
+export function isBundledInstall(
+  resourcesPath: string | undefined,
+  deps: { fileExists: (p: string) => boolean }
+): boolean {
+  if (!resourcesPath) {
+    return false
+  }
+
+  const manifestPath = path.join(resourcesPath, 'agent-payload', 'manifest.json')
+
+  if (!deps.fileExists(manifestPath)) {
+    return false
+  }
+
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+
+    return Boolean(manifest) && manifest.external !== true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Verify the payload is usable — the store python + venv site-packages
  * resolve. NO pyvenv.cfg write: bundled builds run the store python
  * directly (self-relative, works on read-only MSIX), so there is nothing
