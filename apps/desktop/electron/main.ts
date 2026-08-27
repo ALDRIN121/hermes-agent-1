@@ -16044,6 +16044,20 @@ async function handleHermesApiRequest(request) {
   return response
 }
 
+// Format an api-request failure for desktop.log. The renderer only ever sees
+// the invoke rejection; the real stack lives here in main, so persist it
+// before rethrowing. Clamp: paths and error detail must not bloat the log.
+function formatApiRequestFailure(
+  request: { method?: string; path?: string } | null | undefined,
+  error: unknown
+): string {
+  const method = String(request?.method ?? 'GET').toUpperCase()
+  const path = String(request?.path ?? '(no path)').slice(0, 500)
+  const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
+
+  return `[hermes:api ${method} ${path}] ${detail}`.slice(0, 6000)
+}
+
 ipcMain.handle('hermes:api', async (_event, request) => {
   // Hold the deletion gate for BOTH profile deletes and renames: a concurrent
   // renderer reconnect entering ensureBackend() mid-mutation would otherwise
@@ -16052,26 +16066,34 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const mutatingProfile = deletingProfile || profileRenameFromRequest(request)?.oldName || null
   const registryConnectionId = apiRequestRegistryConnectionId(request)
 
-  if (deletingProfile && registryConnectionId) {
-    return dispatchConnectionScopedProfileDelete(request, {
-      acquire: profile => profileDeletionGate.acquire(profile),
-      connectionKind: connectionId => registryConnectionKind(connectionId),
-      dispatch: routeProfile =>
-        dispatchRegistryApiRequest(request, registryConnectionId, routeProfile, deletingProfile),
-      isDefaultProfile: profile => profile === 'default',
-      isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
-      prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
-      teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
-    })
+  try {
+    if (deletingProfile && registryConnectionId) {
+      return await dispatchConnectionScopedProfileDelete(request, {
+        acquire: profile => profileDeletionGate.acquire(profile),
+        connectionKind: connectionId => registryConnectionKind(connectionId),
+        dispatch: routeProfile =>
+          dispatchRegistryApiRequest(request, registryConnectionId, routeProfile, deletingProfile),
+        isDefaultProfile: profile => profile === 'default',
+        isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
+        prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
+        teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
+      })
+    }
+
+    if (!mutatingProfile) {
+      return await handleHermesApiRequest(request)
+    }
+
+    const releaseProfileDeletion = profileDeletionGate.acquire(mutatingProfile)
+
+    return await handleHermesApiRequest(request).finally(releaseProfileDeletion)
+  } catch (error) {
+    // Persist the failure (full stack) before the rejection crosses to the
+    // renderer, where the invoke wrapper strips it to a one-line message.
+    rememberLog(formatApiRequestFailure(request, error))
+    flushDesktopLogBufferSync()
+    throw error
   }
-
-  if (!mutatingProfile) {
-    return handleHermesApiRequest(request)
-  }
-
-  const releaseProfileDeletion = profileDeletionGate.acquire(mutatingProfile)
-
-  return handleHermesApiRequest(request).finally(releaseProfileDeletion)
 })
 
 // One deduper per cross-window cue — the choke point every window shares. Main
@@ -16849,6 +16871,21 @@ ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, line
 ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
   const { label, boundary, message, componentStack } = report && typeof report === 'object' ? report : {}
   rememberLog(formatRendererBoundaryReport(label, boundary, message, componentStack))
+  flushDesktopLogBufferSync()
+})
+
+// Renderer error toasts (notifyError): the toast shows the summarized copy,
+// so the caller posts the full error here for desktop.log. Fire-and-forget,
+// like renderer-error — the toast must never depend on this round-trip.
+// Clamp: the line is renderer-supplied.
+ipcMain.on('hermes:logs:renderer-line', (_event, line) => {
+  const text = typeof line === 'string' ? line.slice(0, 6000) : ''
+
+  if (!text) {
+    return
+  }
+
+  rememberLog(text)
   flushDesktopLogBufferSync()
 })
 

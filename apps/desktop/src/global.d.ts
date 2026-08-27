@@ -324,6 +324,8 @@ declare global {
         message: string
         componentStack: string
       }) => void
+      /** Append one raw line to desktop.log (fire-and-forget, notifyError path). */
+      logLine?: (line: string) => void
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
