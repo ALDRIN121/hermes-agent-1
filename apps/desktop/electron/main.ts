@@ -408,7 +408,6 @@ import { hiddenWindowsChildOptions } from './windows-child-options'
 import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
-  getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
 import {

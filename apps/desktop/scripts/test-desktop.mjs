@@ -272,38 +272,41 @@ function validateBundle() {
     die(`Missing packaged app binary: ${APP.binary}`)
   }
 
+  // The payload may be the real pm bundle (staged by build-bundled-desktop /
+  // `hermes pm bundle --out build/agent-payload`) or the external stub
+  // (plain `npm run pack` in the PR/JS lane — the app fetches the runtime at
+  // first launch via the stage protocol). Validate the payload only when a
+  // real one is present; the stub is the thin-installer contract.
   const payloadRoot = path.join(APP.resourcesPath, 'agent-payload')
   const payloadManifestPath = path.join(payloadRoot, 'manifest.json')
-  if (!exists(payloadManifestPath)) {
-    die(`Missing bundled payload manifest: ${payloadManifestPath}`)
-  }
-  let payloadManifest
-  try {
-    payloadManifest = JSON.parse(fs.readFileSync(payloadManifestPath, 'utf8'))
-  } catch (err) {
-    die(`Bundled payload manifest is not valid JSON: ${err.message}`)
-  }
-  if (payloadManifest.external === true) {
-    die('Bundled payload is the external stub')
-  }
-  for (const key of ['repo', 'store', 'venv']) {
-    if (typeof payloadManifest[key] !== 'string') {
-      die(`Bundled payload manifest is missing ${key}: ${JSON.stringify(payloadManifest)}`)
+  let payloadManifest = null
+  if (exists(payloadManifestPath)) {
+    try {
+      payloadManifest = JSON.parse(fs.readFileSync(payloadManifestPath, 'utf8'))
+    } catch (err) {
+      die(`Bundled payload manifest is not valid JSON: ${err.message}`)
     }
   }
-  const payloadPython = path.join(
-    payloadRoot,
-    payloadManifest.venv,
-    PLATFORM === 'win32' ? 'Scripts' : 'bin',
-    PLATFORM === 'win32' ? 'python.exe' : 'python'
-  )
-  if (!exists(payloadPython)) {
-    die(`Missing bundled payload Python: ${payloadPython}`)
-  }
-  if (PLATFORM === 'win32') {
-    const payloadShim = path.join(payloadRoot, payloadManifest.venv, 'Scripts', 'hermes.exe')
-    if (!exists(payloadShim)) {
-      die(`Missing bundled payload shim: ${payloadShim}`)
+  if (payloadManifest != null && payloadManifest.external !== true) {
+    for (const key of ['repo', 'store', 'venv']) {
+      if (typeof payloadManifest[key] !== 'string') {
+        die(`Bundled payload manifest is missing ${key}: ${JSON.stringify(payloadManifest)}`)
+      }
+    }
+    const payloadPython = path.join(
+      payloadRoot,
+      payloadManifest.venv,
+      PLATFORM === 'win32' ? 'Scripts' : 'bin',
+      PLATFORM === 'win32' ? 'python.exe' : 'python'
+    )
+    if (!exists(payloadPython)) {
+      die(`Missing bundled payload Python: ${payloadPython}`)
+    }
+    if (PLATFORM === 'win32') {
+      const payloadShim = path.join(payloadRoot, payloadManifest.venv, 'Scripts', 'hermes.exe')
+      if (!exists(payloadShim)) {
+        die(`Missing bundled payload shim: ${payloadShim}`)
+      }
     }
   }
 
