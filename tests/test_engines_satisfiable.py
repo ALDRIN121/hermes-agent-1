@@ -109,25 +109,23 @@ class TestEnginesAreSatisfiable:
     def test_node_floor_is_met_by_the_managed_runtime(self):
         """The Node major the installers provision must clear engines.node."""
         node_range = _root_manifest()["engines"]["node"]
-        install_sh = (REPO_ROOT / "scripts" / "install.sh").read_text()
-        for line in install_sh.splitlines():
-            if line.startswith("NODE_VERSION="):
-                managed_major = int(line.split("=", 1)[1].strip().strip('"').strip("'"))
-                break
-        else:  # pragma: no cover - install.sh always defines it
-            pytest.fail("install.sh does not define NODE_VERSION")
+        # pm-era install: node is a pm package pinned in pm/lock.json (the
+        # installers stage it via `pm`, not a NODE_VERSION shell var).
+        lock = json.loads((REPO_ROOT / "pm" / "lock.json").read_text(encoding="utf-8"))
+        node_pin = lock["packages"]["node"]["version"]
+        managed_major = int(node_pin.split(".")[0])
 
-        # install.sh fetches latest-v{major}.x, not {major}.0.0, so compare on
-        # the major: the newest release of that line must be able to clear the
-        # floor. A floor in a HIGHER major than we provision can never be met.
+        # pm fetches the exact pinned version, so compare on the major: the
+        # pinned node line must clear the floor. A floor in a HIGHER major
+        # than we provision can never be met.
         floor_majors = [
             int(m.group(1))
             for m in re.finditer(r">=\s*v?(\d+)", node_range)
         ]
         assert floor_majors, f"cannot read a floor out of {node_range!r}"
         assert managed_major >= min(floor_majors), (
-            f"engines.node is {node_range!r} but install.sh provisions Node "
-            f"{managed_major}.x. The runtime we ship must satisfy the floor we "
+            f"engines.node is {node_range!r} but pm/lock.json pins Node "
+            f"{node_pin}. The runtime we ship must satisfy the floor we "
             "declare, or the install we just performed cannot install deps."
         )
 
@@ -138,23 +136,28 @@ class TestEnginesAreSatisfiable:
         `npm ci` with EBADENGINE (#80769).
         """
         npm_range = _root_manifest()["engines"]["npm"]
-        install_sh = (REPO_ROOT / "scripts" / "install.sh").read_text()
-        for line in install_sh.splitlines():
-            if line.startswith("NODE_VERSION="):
-                managed_major = int(line.split("=", 1)[1].strip().strip('"').strip("'"))
-                break
-        else:  # pragma: no cover
-            pytest.fail("install.sh does not define NODE_VERSION")
-        stock_npm = _STOCK_NPM_BY_NODE_MAJOR.get(managed_major)
-        assert stock_npm is not None, (
-            f"install.sh NODE_VERSION={managed_major} is not in the known "
-            f"stock map {_STOCK_NPM_BY_NODE_MAJOR}"
-        )
-        assert _satisfies_range(stock_npm, npm_range), (
-            f"install.sh provisions Node {managed_major}.x (stock npm "
-            f"{stock_npm}), but engines.npm is {npm_range!r}. A fresh "
-            "Hermes-managed install cannot run npm ci."
-        )
+        # pm-era install: node is pinned in pm/lock.json; the npm that
+        # rides with it is the pm-managed npm (also pinned there).
+        lock = json.loads((REPO_ROOT / "pm" / "lock.json").read_text(encoding="utf-8"))
+        managed_major = int(lock["packages"]["node"]["version"].split(".")[0])
+        managed_npm = lock["packages"].get("npm", {}).get("version", "")
+        if managed_npm:
+            # The pinned npm's own version — clear the floor directly.
+            assert _satisfies_range(managed_npm, npm_range), (
+                f"pm/lock.json pins npm {managed_npm}, but engines.npm is "
+                f"{npm_range!r}. A fresh Hermes-managed install cannot run npm ci."
+            )
+        else:
+            stock_npm = _STOCK_NPM_BY_NODE_MAJOR.get(managed_major)
+            assert stock_npm is not None, (
+                f"pm/lock.json pins Node {managed_major} but it is not in the "
+                f"known stock map {_STOCK_NPM_BY_NODE_MAJOR}"
+            )
+            assert _satisfies_range(stock_npm, npm_range), (
+                f"pm/lock.json pins Node {managed_major}.x (stock npm "
+                f"{stock_npm}), but engines.npm is {npm_range!r}. A fresh "
+                "Hermes-managed install cannot run npm ci."
+            )
 
     def test_desktop_node_floor_is_not_stricter_than_its_toolchain(self):
         """apps/desktop must not demand more Node than its own build tools do.

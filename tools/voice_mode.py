@@ -247,7 +247,7 @@ def detect_audio_environment() -> dict:
     # downgrade to a notice (keeps the same recording guidance visible,
     # but doesn't block /voice on for TTS-only usage).
     try:
-        with open('/proc/version', 'r', encoding="utf-8") as f:
+        with open('/proc/version', 'r', encoding="utf-8") as f:  # windows-footgun: ok (/proc is BOM-free)
             if 'microsoft' in f.read().lower():
                 if has_forwarded_audio:
                     notices.append("Running in WSL with a reachable PulseAudio/PipeWire sound server")
@@ -1338,7 +1338,7 @@ def stop_playback() -> None:
 def _is_wsl() -> bool:
     """True when running inside Windows Subsystem for Linux."""
     try:
-        with open("/proc/version", "r", encoding="utf-8", errors="replace") as f:
+        with open("/proc/version", "r", encoding="utf-8", errors="replace") as f:  # windows-footgun: ok (/proc is BOM-free)
             return "microsoft" in f.read().lower()
     except Exception:
         return False
@@ -1353,7 +1353,7 @@ def _is_wsl2_env() -> bool:
     without fighting builtins.open patching complexity.
     """
     try:
-        with open("/proc/version", encoding="utf-8", errors="replace") as _fv:
+        with open("/proc/version", encoding="utf-8", errors="replace") as _fv:  # windows-footgun: ok (/proc is BOM-free)
             return "microsoft" in _fv.read().lower()
     except OSError:
         return False

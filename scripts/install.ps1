@@ -244,19 +244,21 @@ function Stage-Path {
     $entry = Join-Path $InstallDir "hermes"
     $binDir = Join-Path $HermesHome "bin"
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-    $cmdPath = Join-Path $binDir "hermes.cmd"
-    Set-Content -Path $cmdPath -Encoding ascii -Value @(
-        "@echo off",
-        "set PYTHONPATH=",
-        "set PYTHONHOME=",
-        "`"$python`" `"$entry`" %*"
-    )
+    # Copy the console-script launchers from the venv so `hermes` /
+    # `hermes-acp` resolve through the managed interpreter without touching
+    # the venv\Scripts dir on PATH (which would shadow the user's python).
+    foreach ($name in @("hermes.exe", "hermes-acp.exe")) {
+        $src = Join-Path $InstallDir "venv\Scripts\$name"
+        if (Test-Path $src) {
+            Copy-Item -Path $src -Destination (Join-Path $binDir $name) -Force
+        }
+    }
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($userPath -notlike "*$binDir*") {
         [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
         Log "added $binDir to your user PATH (new shells pick it up)"
     }
-    Log "hermes command installed at $cmdPath"
+    Log "hermes command installed at $binDir"
 }
 
 function Stage-Config {

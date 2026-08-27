@@ -69,7 +69,27 @@ def _patch_gateway_discovery():
     """
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch("hermes_cli.main._detect_venv_python_processes", return_value=[]), \
+         patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False), \
+         patch("os.kill"), \
+         patch("pm.ensure.sync_venv"), \
+         patch(
+             "hermes_cli.update_inventory.collect_runtime_inventory",
+             return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+         ), \
+         patch("hermes_cli.main._purge_stale_hermes_modules"), \
+         patch("hermes_cli.main._pause_windows_gateways_for_update", return_value=None), \
+         patch("hermes_cli.main._resume_windows_gateways_after_update"), \
+         patch(
+             "hermes_cli.main._install_hangup_protection",
+             return_value={
+                 "prev_stdout": None, "prev_stderr": None,
+                 "log_file": None, "installed": False,
+             },
+         ), \
+         patch("hermes_cli.main._finalize_update_output"), \
+         patch("hermes_cli.update_cmd._reload_config_modules"):
         yield
 
 

@@ -7902,16 +7902,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     gateway_mode=gateway_mode,
                     pre_update_snapshot_id=pre_update_snapshot_id,
                 )
-            if runtime_repaired is not None and not _m()._is_windows():
-                print()
-                print(
-                    "⚠ Restart required to finish the managed Python runtime repair."
-                )
-                print(
-                    "  Any running Hermes gateways, Desktop backends, or other "
-                    "long-lived processes still use the previous runtime."
-                )
-                print("  Restart each of them to pick up the repaired runtime.")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             # Git is current, but a prior pull may still owe the fleet a
             # restart (#95294). Catch up even on the "Already up to date"

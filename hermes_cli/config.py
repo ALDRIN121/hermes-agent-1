@@ -15,6 +15,7 @@ This module provides:
 """
 
 import copy
+from decimal import Decimal, InvalidOperation
 from hermes_cli.cli_output import line_input
 import json
 import logging
@@ -3454,6 +3455,23 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     from utils import atomic_yaml_write
 
     require_readable_config_before_write(config_path)
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8-sig") as f:
+                loaded = fast_safe_load(f)
+        except Exception as exc:
+            _backup_corrupt_config(config_path)
+            raise RuntimeError(
+                f"Refusing to overwrite {config_path}: existing config.yaml is not valid YAML "
+                f"({exc}). Fix the file or restore from a .corrupt.*.bak backup first."
+            ) from exc
+        if loaded is not None and not isinstance(loaded, dict):
+            _backup_corrupt_config(config_path)
+            raise RuntimeError(
+                f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, "
+                f"got {type(loaded).__name__}. Fix the file or restore from a "
+                f".corrupt.*.bak backup first."
+            )
     atomic_yaml_write(config_path, data, **kwargs)
 
 
@@ -5434,7 +5452,12 @@ def _coerce_int(value: str):
 
 
 def _coerce_float(value: str):
-    """Return float(value) for a clean float literal, else None."""
+    """Return ``float(value)`` when conversion preserves its decimal value.
+
+    Decimal-looking identifiers can be much more precise than a binary float.
+    Silently rounding one here corrupts it before it reaches ``config.yaml``,
+    so values that do not round-trip through ``float`` remain strings.
+    """
     try:
         f = float(value)
     except (TypeError, ValueError):
@@ -5442,6 +5465,11 @@ def _coerce_float(value: str):
     # Reject NaN/inf spellings — they are almost never intended config values
     # and round-trip confusingly through YAML.
     if f != f or f in (float("inf"), float("-inf")):
+        return None
+    try:
+        if Decimal(value) != Decimal(str(f)):
+            return None
+    except InvalidOperation:
         return None
     return f
 
@@ -5524,14 +5552,22 @@ def set_config_value(key: str, value: str, force: bool = False):
             with open(config_path, encoding="utf-8-sig") as f:
                 user_config = fast_safe_load(f) or {}
         except Exception as exc:
-            print(
-                f"✗ Cannot parse {config_path}: {exc}\n"
-                f"  The file contains a YAML syntax error. Fix the error\n"
-                f"  in your config file first, then retry.\n"
-                f"  (hermes config edit will open it in your editor.)",
-                file=sys.stderr,
+            _backup_corrupt_config(config_path)
+            msg = (
+                f"Refusing to overwrite {config_path}: existing config.yaml is not valid YAML "
+                f"({exc}). Fix the file or restore from a .corrupt.*.bak backup first."
             )
-            sys.exit(1)
+            print(f"✗ {msg}", file=sys.stderr)
+            raise RuntimeError(msg) from exc
+        if not isinstance(user_config, dict):
+            _backup_corrupt_config(config_path)
+            msg = (
+                f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, "
+                f"got {type(user_config).__name__}. Fix the file or restore from a "
+                f".corrupt.*.bak backup first."
+            )
+            print(f"✗ {msg}", file=sys.stderr)
+            raise RuntimeError(msg)
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
@@ -5782,14 +5818,22 @@ def unset_config_value(key: str):
             with open(config_path, encoding="utf-8-sig") as f:
                 user_config = fast_safe_load(f) or {}
         except Exception as exc:
-            print(
-                f"✗ Cannot parse {config_path}: {exc}\n"
-                f"  The file contains a YAML syntax error. Fix the error\n"
-                f"  in your config file first, then retry.\n"
-                f"  (hermes config edit will open it in your editor.)",
-                file=sys.stderr,
+            _backup_corrupt_config(config_path)
+            msg = (
+                f"Refusing to overwrite {config_path}: existing config.yaml is not valid YAML "
+                f"({exc}). Fix the file or restore from a .corrupt.*.bak backup first."
             )
-            sys.exit(1)
+            print(f"✗ {msg}", file=sys.stderr)
+            raise RuntimeError(msg) from exc
+        if not isinstance(user_config, dict):
+            _backup_corrupt_config(config_path)
+            msg = (
+                f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, "
+                f"got {type(user_config).__name__}. Fix the file or restore from a "
+                f".corrupt.*.bak backup first."
+            )
+            print(f"✗ {msg}", file=sys.stderr)
+            raise RuntimeError(msg)
 
     removed = _unset_nested(user_config, key)
 
@@ -5849,7 +5893,11 @@ def config_command(args):
             print("  --force: skip the unknown-key notice for unrecognized keys,")
             print("           and allow a scalar to replace a whole mapping section")
             sys.exit(1)
-        set_config_value(key, value, force=force)
+        try:
+            set_config_value(key, value, force=force)
+        except RuntimeError as exc:
+            print(f"✗ {exc}", file=sys.stderr)
+            sys.exit(1)
 
     elif subcmd == "unset":
         key = getattr(args, 'key', None)
@@ -5861,7 +5909,11 @@ def config_command(args):
             print("  hermes config unset terminal.backend")
             print("  hermes config unset OPENROUTER_API_KEY")
             sys.exit(1)
-        unset_config_value(key)
+        try:
+            unset_config_value(key)
+        except RuntimeError as exc:
+            print(f"✗ {exc}", file=sys.stderr)
+            sys.exit(1)
     
     elif subcmd == "path":
         print(get_config_path())

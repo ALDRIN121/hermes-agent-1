@@ -1494,7 +1494,7 @@ def _cdp_on_data_dir(http_cdp: str, data_dir: str) -> bool:
     if not m:
         return False
     try:
-        with open(os.path.join(data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
+        with open(os.path.join(data_dir, "DevToolsActivePort"), encoding="utf-8-sig") as fh:
             port_line = fh.readline().strip()
         return port_line == m.group(1)
     except OSError:

@@ -20,9 +20,10 @@ def test_apt_stamp_is_detected_and_recommends_pkg_upgrade(tmp_path):
 
 @patch("hermes_cli.config.is_managed", return_value=False)
 @patch("hermes_cli.config.detect_install_method", return_value="apt")
+@patch("hermes_cli.version_info.get_version_info")
 @patch("subprocess.run")
 def test_cmd_update_apt_prints_pkg_guidance_without_git(
-    mock_run, _mock_method, _mock_managed, capsys
+    mock_run, _mock_version, _mock_method, _mock_managed, capsys
 ):
     with pytest.raises(SystemExit) as excinfo:
         cmd_update(SimpleNamespace(check=False))
@@ -34,9 +35,10 @@ def test_cmd_update_apt_prints_pkg_guidance_without_git(
 
 
 @patch("hermes_cli.config.detect_install_method", return_value="apt")
+@patch("hermes_cli.version_info.get_version_info")
 @patch("subprocess.run")
 def test_cmd_update_check_apt_prints_pkg_guidance_without_git(
-    mock_run, _mock_method, capsys
+    mock_run, _mock_version, _mock_method, capsys
 ):
     with pytest.raises(SystemExit) as excinfo:
         _cmd_update_check()

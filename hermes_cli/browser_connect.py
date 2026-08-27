@@ -528,7 +528,7 @@ def _last_used_profile(src: str) -> str:
     import json
 
     try:
-        with open(os.path.join(src, "Local State"), encoding="utf-8", errors="replace") as fh:
+        with open(os.path.join(src, "Local State"), encoding="utf-8-sig", errors="replace") as fh:
             state = json.load(fh)
         last = ((state.get("profile") or {}).get("last_used")) or "Default"
     except (OSError, ValueError, AttributeError):
