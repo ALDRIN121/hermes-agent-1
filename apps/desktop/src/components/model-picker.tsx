@@ -1,12 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
-import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
+import type { LocalModelLoadProgress, ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
 import { cn } from '../lib/utils'
@@ -63,6 +64,20 @@ export function ModelPickerDialog({
     enabled: open
   })
 
+  // Live load state for the managed local server: which model is loading
+  // into memory right now, with a REAL percent (per-tensor callback relayed
+  // over the router's SSE stream). Polled only while the picker is open —
+  // 2s idle cadence is enough for a bar under a ~40s load. Errors read as
+  // "nothing loading" (remote-only installs have no local-models routes).
+  const localStatus = useQuery({
+    queryKey: ['local-models-loading', profile],
+    queryFn: () => getLocalModelsStatus(),
+    enabled: open,
+    refetchInterval: 2_000,
+    retry: false
+  })
+  const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
+
   const providers = modelOptions.data?.providers ?? []
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
@@ -115,6 +130,7 @@ export function ModelPickerDialog({
               currentProvider={optionsProvider || currentProvider}
               error={error}
               loading={loading}
+              loadingModels={loadingModels}
               onSelectModel={selectModel}
               providers={providers}
               search={search}
@@ -141,6 +157,7 @@ function ModelResults({
   providers,
   currentModel,
   currentProvider,
+  loadingModels,
   onSelectModel,
   search
 }: {
@@ -149,6 +166,7 @@ function ModelResults({
   providers: ModelOptionProvider[]
   currentModel: string
   currentProvider: string
+  loadingModels: Record<string, LocalModelLoadProgress>
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
   search: string
 }) {
@@ -211,6 +229,10 @@ function ModelResults({
               const isCurrent = model === currentModel && provider.slug === currentProvider
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
+              // Managed local model loading into memory right now: show the
+              // real load percent inline (keyed by exact model id — remote
+              // providers never match).
+              const loadProgress = loadingModels[model]
 
               return (
                 <CommandItem
@@ -232,6 +254,19 @@ function ModelResults({
                   <span className="min-w-0 flex-1 truncate">
                     <HighlightMatches query={search} text={model} />
                   </span>
+                  {loadProgress && (
+                    <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>
+                      <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+                        <span
+                          className="block h-full rounded-full bg-primary transition-[width] duration-500"
+                          style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
+                        />
+                      </span>
+                      <span className="text-[0.62rem] tabular-nums text-muted-foreground">
+                        {loadProgress.percent}%
+                      </span>
+                    </span>
+                  )}
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
                   )}

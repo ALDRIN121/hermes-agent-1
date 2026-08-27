@@ -19,6 +19,7 @@ import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { usePointerQuiet } from '@/components/ui/keyboard-first'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
+import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
@@ -36,7 +37,7 @@ import {
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
-import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+import type { LocalModelLoadProgress, ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
@@ -130,6 +131,7 @@ export function ModelCatalogMenu({
 }: ModelCatalogMenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
+  const copyPicker = t.modelPicker
   const closeMenu = useContext(ModelMenuCloseContext)
   const [search, setSearch] = useState('')
   const collapsedProviders = useStoreCollapsed()
@@ -149,6 +151,19 @@ export function ModelCatalogMenu({
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
+
+  // Live load state for the managed local server: which model is loading
+  // into memory right now, with a REAL percent (per-tensor callback relayed
+  // over the router's SSE stream). Polled only while this menu is mounted
+  // (it unmounts on close); errors read as "nothing loading" — remote-only
+  // installs have no local-models routes.
+  const localStatus = useQuery({
+    queryKey: ['local-models-loading', profile],
+    queryFn: () => getLocalModelsStatus(),
+    refetchInterval: 2_000,
+    retry: false
+  })
+  const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
 
   const error = modelOptions.error
     ? modelOptions.error instanceof Error
@@ -408,6 +423,10 @@ export function ModelCatalogMenu({
                     const isCurrent = activeId !== null
                     const name = modelDisplayParts(family.id).name
                     const caps = group.provider.capabilities?.[family.id]
+                    // Managed local model loading into memory right now:
+                    // real load percent, keyed by exact model id (remote
+                    // providers never collide with GGUF stems).
+                    const loadProgress = loadingModels[family.id] ?? (family.fastId ? loadingModels[family.fastId] : undefined)
 
                     // Effective settings for this row: the live choice when it's
                     // the active model, otherwise its remembered preset. Row
@@ -457,8 +476,28 @@ export function ModelCatalogMenu({
                             <HighlightMatches query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                           </span>
+                          {loadProgress ? (
+                            <span
+                              className="ml-auto flex shrink-0 items-center gap-1.5"
+                              title={copyPicker.loadingIntoMemory}
+                            >
+                              <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+                                <span
+                                  className="block h-full rounded-full bg-primary transition-[width] duration-500"
+                                  style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
+                                />
+                              </span>
+                              <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">
+                                {loadProgress.percent}%
+                              </span>
+                            </span>
+                          ) : null}
                           {isCurrent ? (
-                            <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
+                            <Codicon
+                              className={cn('text-foreground', loadProgress ? 'ml-1' : 'ml-auto')}
+                              name="check"
+                              size="0.75rem"
+                            />
                           ) : null}
                         </DropdownMenuSubTrigger>
                         <ModelEditSubmenu
