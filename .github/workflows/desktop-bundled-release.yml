@@ -241,6 +241,11 @@ jobs:
             ${{ github.workspace }}/.cache/electron-builder
             ${{ github.workspace }}/.cache/electron
           key: eb-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
+          # An electron/builder bump misses the exact key, but the previous
+          # dist is still mostly reusable (electron's postinstall skips the
+          # download when dist/ exists) — restore it and let npm ci top up.
+          restore-keys: |
+            eb-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache node_modules
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -253,6 +258,24 @@ jobs:
             web/node_modules
             tests-js/node_modules
           key: node-modules-${{ matrix.target.label }}-node${{ steps.pins.outputs.node }}-npm${{ steps.pins.outputs.npm }}-${{ hashFiles('package-lock.json') }}
+          # npm ci rm -rf's node_modules before installing, so a restore is
+          # never shipped stale — but a restore-key hit still makes the
+          # reinstall incremental (postinstall outputs like node-pty's
+          # prebuilds/ and esbuild's platform binary survive in place).
+          # The build-bundled install-stamp gate (lock sha + node + npm +
+          # target) is the real guard against stale trees shipping.
+          restore-keys: |
+            node-modules-${{ matrix.target.label }}-node${{ steps.pins.outputs.node }}-npm${{ steps.pins.outputs.npm }}-
+
+      - name: Cache node-pty prebuilds (postinstall output, emulated-gyp tax on arm64)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            node_modules/node-pty/prebuilds
+            node_modules/node-pty/build
+          key: node-pty-prebuilds-${{ matrix.target.label }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            node-pty-prebuilds-${{ matrix.target.label }}-
 
       - name: Azure login (OIDC)
         if: startsWith(matrix.target.label, 'win32-') && vars.AZURE_CLIENT_ID != ''
