@@ -300,6 +300,21 @@ export function mergeFeedYmls(ymls) {
   return parts.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n'
 }
 
+/**
+ * Rewrite a feed yml's path:/url: entries to ABSOLUTE /releases/tag/<tag>/
+ * object keys. The feed manifest lives in releases/darwin/<channel>/ but the
+ * binaries live once in the tag archive; both updater mechanisms resolve the
+ * value against the feed host root (electron-updater: new URL(path, baseUrl)).
+ * `absKey` maps a filename to its absolute key (e.g. /releases/tag/v0.28.0/x).
+ * Values that already start with '/' are left alone (idempotent).
+ */
+export function rewriteFeedPaths(ymlText, absKey) {
+  return ymlText.replace(/^(\s*(?:-\s+)?(?:path|url)):\s*([^\s#]+)\s*$/gm, (_m, key, value) => {
+    if (value.startsWith('/')) return _m
+    return `${key}: ${absKey(value)}`
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -338,13 +353,20 @@ async function cmdPut({ tag, key, file }) {
 }
 
 /**
- * finalize: merge the matrix legs' staged artifacts into the per-channel feeds.
+ * finalize: write the per-channel feed MANIFESTS that point at the staged
+ * binaries. Binaries live ONCE under releases/tag/<tag>/ (staged by the
+ * matrix legs); the feed dirs carry only the manifests:
+ *
+ *   releases/win32/<channel>/RELEASES         Squirrel manifest, one line
+ *     per .msix, filename = absolute /releases/tag/<tag>/<msix> (the builtin
+ *     autoUpdater resolves it against the feed host root).
+ *   releases/darwin/<channel>/<channel>-mac.yml
+ *     merged electron-updater feed; path:/url: entries rewritten to the
+ *     absolute /releases/tag/<tag>/<file> locations (electron-updater
+ *     resolves them with new URL(path, baseUrl)).
+ *
  * Expects --dir to contain the merged artifacts for ONE tag:
- *   *.msix / *.msix.blockmap  (win legs)  → releases/win32/<channel>/
- *   latest-mac.yml, nightly-mac.yml, *.dmg, *.zip, *.blockmap (mac legs)
- *                                        → releases/darwin/<channel>/
- * Generates the Squirrel RELEASES manifest for the win32 feed from the msix
- * files present, and merges the mac feed ymls' files[] lists.
+ *   *.msix / *.msix.blockmap / *-mac.yml / *.dmg / *.zip
  */
 async function cmdFinalize({ tag, dir }) {
   const accountId = requiredEnv('CLOUDFLARE_R2_ACCOUNT_ID')
@@ -357,36 +379,35 @@ async function cmdFinalize({ tag, dir }) {
   const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
 
   const files = fs.readdirSync(dir).filter((f) => fs.statSync(path.join(dir, f)).isFile())
+  // Absolute key of a staged artifact — the feed manifests reference these.
+  const absKey = (filename) => `/${stagingKeyFor(tag, filename)}`
 
-  // --- win32: msix + blockmaps + generated RELEASES ---
+  // --- win32: RELEASES manifest only (msix stay under releases/tag/<tag>/) ---
   const msixFiles = files.filter((f) => f.endsWith('.msix'))
   if (msixFiles.length > 0) {
-    const winDir = feedDirFor('win32', channel)
     const packages = []
     for (const f of msixFiles) {
       const buf = fs.readFileSync(path.join(dir, f))
-      packages.push({ sha1: createHash('sha1').update(buf).digest('hex'), size: buf.length, filename: f })
-      await putObject(creds, base, bucket, `${winDir}/${f}`, buf, now)
+      // The manifest's filename is the absolute object key; the client
+      // resolves it against the feed host root.
+      packages.push({ sha1: createHash('sha1').update(buf).digest('hex'), size: buf.length, filename: absKey(f) })
     }
+    const winDir = feedDirFor('win32', channel)
     await putObject(creds, base, bucket, `${winDir}/RELEASES`, Buffer.from(renderReleases(packages), 'utf8'), now)
-    for (const f of files.filter((f) => f.endsWith('.msix.blockmap'))) {
-      await putObject(creds, base, bucket, `${winDir}/${f}`, fs.readFileSync(path.join(dir, f)), now)
-    }
   }
 
-  // --- darwin: merged feed yml + dmg/zip/blockmaps ---
-  const macFeedName = `${channel}-mac.yml`
+  // --- darwin: merged feed yml only (dmg/zip/blockmap stay in the tag dir) ---
   const macYmls = files.filter((f) => f.endsWith(`-mac.yml`))
   if (macYmls.length > 0) {
     const darDir = feedDirFor('darwin', channel)
-    const merged = mergeFeedYmls(macYmls.map((f) => fs.readFileSync(path.join(dir, f), 'utf8')))
+    const macFeedName = `${channel}-mac.yml`
+    // Rewrite path:/url: to absolute /releases/tag/<tag>/ locations so the
+    // client fetches binaries from the archive, not the feed dir.
+    const merged = rewriteFeedPaths(mergeFeedYmls(macYmls.map((f) => fs.readFileSync(path.join(dir, f), 'utf8'))), absKey)
     await putObject(creds, base, bucket, `${darDir}/${macFeedName}`, Buffer.from(merged, 'utf8'), now)
-    for (const f of files.filter((f) => /\.(dmg|zip|blockmap)$/.test(f))) {
-      await putObject(creds, base, bucket, `${darDir}/${f}`, fs.readFileSync(path.join(dir, f)), now)
-    }
   }
 
-  console.log(`✓ r2: finalized ${tag} → ${channel} feeds`)
+  console.log(`✓ r2: finalized ${tag} → ${channel} feed manifests`)
 }
 
 /** Parse a ListObjectsV2 XML body into { keys: string[], truncated, nextToken }. */

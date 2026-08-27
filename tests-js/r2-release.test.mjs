@@ -27,6 +27,7 @@ import {
   mergeFeedYmls,
   nightlyDoomedKeys,
   renderReleases,
+  rewriteFeedPaths,
   stagingKeyFor,
   parseListXml,
   rfc3986Encode,
@@ -182,12 +183,37 @@ test('stagingKeyFor + feedDirFor produce the layout keys', () => {
   assert.equal(feedDirFor('darwin', 'nightly'), 'releases/darwin/nightly')
 })
 
-test('renderReleases emits Squirrel manifest lines, newest first', () => {
+test('renderReleases emits Squirrel manifest lines with the absolute object key', () => {
   const text = renderReleases([
-    { sha1: 'a'.repeat(40), size: 123, filename: 'HermesBundled-0.28.0-win-arm64.msix' },
-    { sha1: 'b'.repeat(40), size: 456, filename: 'HermesBundled-0.28.0-win-x64.msix' },
+    { sha1: 'a'.repeat(40), size: 123, filename: '/releases/tag/v0.28.0/HermesBundled-0.28.0-win-arm64.msix' },
+    { sha1: 'b'.repeat(40), size: 456, filename: '/releases/tag/v0.28.0/HermesBundled-0.28.0-win-x64.msix' },
   ])
-  assert.equal(text, `${'a'.repeat(40)} 123 HermesBundled-0.28.0-win-arm64.msix\n${'b'.repeat(40)} 456 HermesBundled-0.28.0-win-x64.msix\n`)
+  assert.equal(text,
+    `${'a'.repeat(40)} 123 /releases/tag/v0.28.0/HermesBundled-0.28.0-win-arm64.msix\n` +
+    `${'b'.repeat(40)} 456 /releases/tag/v0.28.0/HermesBundled-0.28.0-win-x64.msix\n`)
+})
+
+test('rewriteFeedPaths rewrites path:/url: to absolute /releases/tag keys, idempotent', () => {
+  const absKey = (f) => `/releases/tag/v0.28.0/${f}`
+  const yml = `version: 0.28.0
+files:
+  - url: HermesBundled-0.28.0-mac-x64.zip
+    sha512: abc
+    size: 1
+  - url: HermesBundled-0.28.0-mac-x64.dmg
+    sha512: def
+    size: 2
+path: HermesBundled-0.28.0-mac-x64.zip
+sha512: ghi
+releaseDate: '2026-08-18T00:00:00.000Z'
+`
+  const once = rewriteFeedPaths(yml, absKey)
+  assert.ok(once.includes('url: /releases/tag/v0.28.0/HermesBundled-0.28.0-mac-x64.zip'))
+  assert.ok(once.includes('url: /releases/tag/v0.28.0/HermesBundled-0.28.0-mac-x64.dmg'))
+  assert.ok(once.includes('path: /releases/tag/v0.28.0/HermesBundled-0.28.0-mac-x64.zip'))
+  assert.ok(once.includes('sha512: abc')) // artifact hashes untouched
+  // Already-absolute values are left alone (a re-finalize must not double-prefix).
+  assert.equal(rewriteFeedPaths(once, absKey), once)
 })
 
 test('mergeFeedYmls concatenates files[] lists, dedupes, keeps head', () => {
