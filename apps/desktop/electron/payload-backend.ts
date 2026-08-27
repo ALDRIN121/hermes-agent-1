@@ -17,8 +17,8 @@
  * adoptPayloadVenv() rewrites it from the payload's own facts.json.
  */
 
-import fs from 'node:fs'
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
 import path from 'node:path'
 
 export interface PayloadInfo {
