@@ -2153,8 +2153,10 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     workflow run at all. A tag-push trigger would therefore work for a
     hand-cut stable release and silently do nothing for the nightly.
 
-    Called after the draft release exists, so the build's upload step
-    always finds it. --ref pins the workflow FILE version to the tag being
+    Called after the draft release exists — its body is where the
+    builds-pending / builds-table jobs splice the download tables (the
+    binaries themselves go to the R2 bucket; the release carries notes
+    only). --ref pins the workflow FILE version to the tag being
     built, so an old tag rebuilds with the workflow it shipped with.
     """
     cmd = [
@@ -2553,7 +2555,8 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
     # marker with a "builds in progress" link to the run as soon as the
     # workflow starts. The builds-table job then replaces the link with
     # the download tables once every matrix leg has uploaded its
-    # artifacts (real asset names, never predicted ones). A release
+    # artifacts to the R2 bucket (real object names, never predicted
+    # ones; the release body links point at the R2 public URL). A release
     # whose matrix never finishes keeps the link — visibly unfinished,
     # and it points at the run that stopped.
     lines.append("<!-- HERMES_BUILDS_TABLE -->")
@@ -2747,7 +2750,7 @@ def cmd_nightly(args) -> None:
         sys.exit(1)
     changelog_file.unlink(missing_ok=True)
     print(f"✓ Nightly prerelease drafted: {result.stdout.strip()}")
-    # The build attaches the installers to the draft and, for a nightly
+    # The build stages the installers to the R2 bucket and, for a nightly
     # tag, publishes it when the whole matrix is green.
     dispatch_desktop_build(tag_name, gh_repo)
     # Record the tag for any workflow step that wants it. release.py
@@ -2944,11 +2947,13 @@ def main():
             print("    Continue manually after fixing access:")
             print(f"    git push {push_remote} HEAD --tags")
 
-        # Create the GitHub release as a DRAFT, then start the desktop
-        # build against it. The build attaches the installers and the
-        # electron-updater feed files to this draft. Publishing now would
-        # expose an artifact-less release; a stable release is published
-        # by hand once that matrix is green.
+        # Create the GitHub release as a DRAFT (it carries the notes only),
+        # then start the desktop build. The build stages the installers and
+        # feed files to the R2 bucket and the finalize job publishes the
+        # feeds; the builds-table job renders the download links into this
+        # draft's body. Publishing now would expose an artifact-less
+        # release; a stable release is published by hand once the matrix
+        # is green.
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog, encoding="utf-8")
 
@@ -2982,7 +2987,7 @@ def main():
             print(f"  ✓ GitHub draft release created: {result.stdout.strip()}")
             dispatch_desktop_build(tag_name, gh_repo)
             print(f"\n  🎉 Release v{new_version} ({tag_name}) drafted!")
-            print("     The Desktop Bundled Release workflow attaches installers to the draft.")
+            print("     The Desktop Bundled Release workflow stages installers to the R2 bucket.")
             print("     Publish once it is green:")
             repo_flag = f" --repo {gh_repo}" if gh_repo else ""
             print(f"     gh release edit {tag_name}{repo_flag} --draft=false")

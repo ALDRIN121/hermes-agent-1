@@ -86,9 +86,10 @@ class TestNightlyDateStamps:
 class TestNightlyIsDrafted:
     """A nightly is created as a DRAFT prerelease.
 
-    A published release with no installers attached is one users can
-    reach and cannot use. The desktop matrix attaches the installers to
-    the draft by tag, and the nightly workflow publishes it only after
+    A published release with no installers staged is one users can
+    reach and cannot use. The desktop matrix stages the installers to the
+    R2 bucket (releases/tag/<tag>/), the finalize job publishes the
+    feeds, and the nightly workflow publishes the release only after
     that matrix is green.
     """
 

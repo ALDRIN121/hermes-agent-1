@@ -16,9 +16,11 @@ name: Nightly Release
 # `release.py --nightly --publish` by hand does exactly what the cron
 # does — same tag, same draft, same build, same auto-publish.
 #
-# The desktop build attaches the installers to the draft and publishes
-# it when the whole matrix is green. A failed matrix leaves a draft:
-# inspectable, re-runnable, and unreachable by users.
+# The desktop build uploads the installers to the Cloudflare R2 release
+# bucket and publishes the draft when the whole matrix is green. A failed
+# matrix leaves a draft: inspectable, re-runnable, and unreachable by
+# users. The prune job deletes both the GitHub releases+tags and the R2
+# nightly objects older than 14 days.
 #
 # schedule: is the ONE sanctioned time trigger in this repo (nightly
 # exemption). Everything else stays event-driven.
@@ -60,6 +62,7 @@ jobs:
     name: Prune nightlies older than 14 days
     runs-on: ubuntu-24.04
     needs: tag
+    environment: release-signing
     # Prune even when there was nothing to tag today. The desktop build
     # runs in its own workflow run now, so this no longer waits on it —
     # the window is 14 days, far wider than any build.
@@ -73,3 +76,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/release.py --prune-nightlies --publish --remote origin
+      - name: Prune R2 nightly objects
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+        run: node scripts/r2-release.mjs prune-nightlies --keep-days 14

@@ -3,8 +3,16 @@ name: Desktop Bundled Release
 # Builds the bundled desktop installer for each (os, arch) target.
 #
 #   tag validation → 6-target matrix → pm bundle → electron-builder
-#   → artifacts + (optional) GitHub release upload of installers,
-#   blockmaps, and latest.yml / nightly.yml.
+#   → stage artifacts to R2 (releases/tag/<tag>/) → finalize job merges
+#   the per-channel feeds (releases/win32/<ch>/RELEASES + msix,
+#   releases/darwin/<ch>/<channel>-mac.yml + dmg/zip) → builds table.
+#   The GitHub release keeps the notes only — no binaries.
+#
+# Feed layout (matches apps/desktop/electron/app-updater.ts's arms):
+#   releases/win32/<stable|nightly>/RELEASES   builtin autoUpdater (MSIX)
+#   releases/darwin/<stable|nightly>/*-mac.yml electron-updater (dmg/zip)
+# The finalize job writes the feeds ONCE after the whole matrix is green,
+# so a failed leg can never publish a partial channel.
 #
 # Payload staging is `hermes pm bundle` on the native runner. There is
 # no cross-target staging. Signing and notarization are a later commit;
@@ -17,6 +25,12 @@ name: Desktop Bundled Release
 #
 # Triggers: workflow_dispatch with an explicit tag. A tag push does not
 # start this workflow (a bot-pushed nightly tag would never fire).
+#
+# R2 secrets (repo-level or the release-signing environment): the R2
+# account id + an R2 API token (S3-compatible) with read/write on the
+# release bucket; CLOUDFLARE_R2_BUCKET and CLOUDFLARE_R2_PUBLIC_URL are
+# non-secret vars. scripts/r2-release.mjs derives the S3 endpoint from
+# the account id and needs only node — no npm ci, no extra deps.
 
 on:
   workflow_dispatch:
@@ -26,7 +40,7 @@ on:
         required: true
         type: string
       upload_release:
-        description: 'Attach artifacts to the GitHub release for the tag'
+        description: 'Upload artifacts to the R2 release bucket (staging + feeds)'
         required: false
         type: boolean
         default: false
@@ -101,6 +115,11 @@ jobs:
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       electron_config_cache: ${{ github.workspace }}/.cache/electron
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
       - name: Disable Spotlight indexing and XProtect
         if: startsWith(matrix.target.label, 'darwin-')
@@ -331,12 +350,13 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: Upload to GitHub release
+      - name: Stage to Cloudflare R2
         if: inputs.upload_release == true
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+        # Every artifact goes to releases/tag/<tag>/ (immutable staging).
+        # The finalize job (below) merges these into the win32/darwin feed
+        # dirs after the whole matrix is green — never from a leg, so a
+        # failed leg cannot publish a partial feed.
         run: |
           shopt -s nullglob
           files=(apps/desktop/release/*.dmg apps/desktop/release/*.zip \
@@ -347,11 +367,38 @@ jobs:
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error::no release artifacts found"; exit 1
           fi
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::no release exists for $TAG — create it (as a draft) before the build uploads to it"
-            exit 1
-          fi
-          gh release upload "$TAG" "${files[@]}" --clobber
+          for f in "${files[@]}"; do
+            node scripts/r2-release.mjs put \
+              --tag "$HERMES_PAYLOAD_TAG" --key "$(basename "$f")" --file "$f"
+          done
+
+  finalize:
+    name: Publish feeds to R2
+    needs: [build, first-boot]
+    if: inputs.upload_release == true
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag }}
+          sparse-checkout: |
+            scripts/r2-release.mjs
+          sparse-checkout-cone-mode: false
+      - name: Download staged artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: hermes-bundled-*-${{ inputs.tag }}
+          path: staged
+          merge-multiple: true
+      - name: Finalize feeds
+        env:
+          HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+        run: node scripts/r2-release.mjs finalize --tag "$HERMES_PAYLOAD_TAG" --dir staged
 
   builds-pending:
     name: Mark the builds table as in progress
@@ -375,15 +422,21 @@ jobs:
 
   builds-table:
     name: Render the release builds table
-    needs: [build, first-boot]
+    needs: [build, first-boot, finalize]
     if: inputs.upload_release == true
     runs-on: ubuntu-24.04
+    environment: release-signing
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Render
         env:
           GH_TOKEN: ${{ github.token }}
           HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
         run: |
           if ! gh release view "$HERMES_PAYLOAD_TAG" >/dev/null 2>&1; then
             echo "::error::no release exists for $HERMES_PAYLOAD_TAG — cannot render the builds table"
@@ -394,7 +447,7 @@ jobs:
 
   publish-nightly:
     name: Publish the nightly release
-    needs: [build, first-boot, builds-table]
+    needs: [build, first-boot, builds-table, finalize]
     if: |
       always()
       && inputs.upload_release == true
@@ -402,6 +455,7 @@ jobs:
       && needs.build.result == 'success'
       && needs.first-boot.result == 'success'
       && needs.builds-table.result == 'success'
+      && needs.finalize.result == 'success'
     runs-on: ubuntu-24.04
     steps:
       - name: Publish

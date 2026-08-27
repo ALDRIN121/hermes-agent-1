@@ -47,13 +47,16 @@ module.exports = {
   ],
   artifactName: `${appNamePascal}-\${version}-\${os}-\${arch}.\${ext}`,
   icon: 'assets/icon',
+  // The electron-updater feed. CI builds set CLOUDFLARE_R2_PUBLIC_URL (the R2
+  // public bucket / custom domain) and publish there — the feed yml, blockmaps
+  // and installers all live in the same flat R2 bucket, and electron-updater
+  // resolves the yml's relative artifact paths against it. Builds without the
+  // var (local, or a fork without the R2 vars) keep the github provider, which
+  // is exactly today's behavior.
   publish: [
-    {
-      provider: 'github',
-      owner,
-      repo,
-      channel
-    }
+    process.env.CLOUDFLARE_R2_PUBLIC_URL
+      ? { provider: 'generic', url: process.env.CLOUDFLARE_R2_PUBLIC_URL.replace(/\/+$/, ''), channel }
+      : { provider: 'github', owner, repo, channel }
   ],
   extraMetadata: {
     name: appNamePascal,
