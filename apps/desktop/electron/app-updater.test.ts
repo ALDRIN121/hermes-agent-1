@@ -4,11 +4,11 @@ import { test } from 'vitest'
 
 import {
   applyDarwinUpdate,
-  PLACEHOLDER_FEED_BASE_URL,
   applyWin32Update,
   checkWin32Update,
   describeFeedCheck,
   feedSelection,
+  PLACEHOLDER_FEED_BASE_URL,
   resolveFeedBaseUrl,
   resolveUpdaterChannel,
   selectUpdaterArm,

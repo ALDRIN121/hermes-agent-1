@@ -18,8 +18,8 @@
  */
 
 import fs from 'node:fs'
-import path from 'node:path'
 import { createHash } from 'node:crypto'
+import path from 'node:path'
 
 export interface PayloadInfo {
   root: string
@@ -258,10 +258,9 @@ export function updateChannelFromConfig(
     }
 
     if (idIndent === null) {
-      if (new RegExp(`^${installId}:\s*$`).test(key)) {
+      if (new RegExp(`^${installId}:\\s*$`).test(key)) {
         idIndent = indent
       }
-
       continue
     }
 
