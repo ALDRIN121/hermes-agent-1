@@ -1789,7 +1789,7 @@ google-chat = [
     { name = "google-auth" },
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
-    { name = "google-cloud-pubsub" },
+    { name = "google-cloud-pubsub", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "httplib2" },
     { name = "pyasn1" },
 ]
@@ -1968,7 +1968,7 @@ requires-dist = [
     { name = "google-auth", marker = "extra == 'vertex'", specifier = "==2.55.1" },
     { name = "google-auth-httplib2", marker = "extra == 'google'", specifier = "==0.3.1" },
     { name = "google-auth-oauthlib", marker = "extra == 'google'", specifier = "==1.3.1" },
-    { name = "google-cloud-pubsub", marker = "extra == 'google-chat'", specifier = "==2.39.0" },
+    { name = "google-cloud-pubsub", marker = "(platform_machine != 'ARM64' and extra == 'google-chat') or (sys_platform != 'win32' and extra == 'google-chat')", specifier = "==2.39.0" },
     { name = "hermes-agent", extras = ["acp"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["audio-io"], marker = "extra == 'voice'" },
     { name = "hermes-agent", extras = ["audio-io"], marker = "extra == 'wake-openwakeword'" },

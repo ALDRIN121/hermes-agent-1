@@ -354,7 +354,7 @@ google = [
 # streaming pull + Chat REST API. Composes [google] (googleapiclient /
 # google-auth / httplib2 for the Chat API + user OAuth) and adds the
 # Pub/Sub subscriber client.
-google-chat = ["hermes-agent[google]", "google-cloud-pubsub==2.39.0"]
+google-chat = ["hermes-agent[google]", "google-cloud-pubsub==2.39.0; sys_platform != 'win32' or platform_machine != 'ARM64'"]
 youtube = [
   # Required by skills/media/youtube-content and
   # optional-skills/productivity/memento-flashcards (youtube_quiz.py).
