@@ -1,11 +1,26 @@
-// Replace payload-internal python links with independent copies.
+// Rewrite payload-internal python links to RELATIVE symlinks.
 //
 // uv venv --relocatable on POSIX makes venv/bin/python* a symlink (or a
-// hardlink) onto the store interpreter. codesign signs one path, the other
-// inode changes, and the next pass reports "file modified" and retries.
+// hardlink) onto the store interpreter, with an ABSOLUTE target (the build
+// runner's staging path). An absolute symlink dangles once the unpacked
+// tree moves (first-boot smoke, or a user installing to a different path),
+// and a materialized COPY loses the tree identity the interpreter needs to
+// resolve its stdlib (sys.prefix falls back to the baked build prefix →
+// "No module named 'encodings'").
+//
+// The correct relocatable form is a RELATIVE symlink: the target lives
+// inside the bundle (resources/agent-payload/tools/<entry>/bin/python3),
+// so venv/bin/python -> ../tools/<entry>/bin/python3 survives moving the
+// whole tree, and the interpreter resolves its real prefix through the
+// link (stdlib found, no /install fallback).
+//
 // Only venv/bin is rewritten. Do not walk the rest of the payload: a
 // file-symlink at Foo.framework/Foo is the framework binary, and
 // flattening it makes codesign report "bundle format is ambiguous".
+//
+// A symlink whose target points OUTSIDE the bundle is a build bug (the
+// payload's own venv must never reference the builder's machine) — fail
+// loudly rather than ship a dangling link.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -43,10 +58,16 @@ export function stripFetchCache(root) {
   return removed
 }
 
-export function materializePayloadLinks(root) {
+/**
+ * Rewrite payload-internal absolute symlinks under venv/bin to RELATIVE
+ * ones. Returns the count rewritten. Throws if a symlink's target escapes
+ * the payload (the venv must never reference the build machine).
+ */
+export function relativizePayloadLinks(root) {
   if (!root || !fs.existsSync(root)) return 0
   const bin = path.join(root, 'venv', 'bin')
   if (!fs.existsSync(bin)) return 0
+  const payloadRoot = path.resolve(root)
   let count = 0
   let entries
   try {
@@ -62,27 +83,27 @@ export function materializePayloadLinks(root) {
     } catch {
       continue
     }
-    if (st.isSymbolicLink()) {
-      let target
-      try {
-        target = fs.statSync(p)
-      } catch {
-        continue
-      }
-      if (!target.isFile()) continue
-      const tmp = `${p}.__materialize__`
-      fs.copyFileSync(p, tmp)
-      fs.unlinkSync(p)
-      fs.renameSync(tmp, p)
-      count += 1
+    if (!st.isSymbolicLink()) continue
+    let target
+    try {
+      target = fs.readlinkSync(p)
+    } catch {
       continue
     }
-    if (st.isFile() && st.nlink > 1) {
-      const tmp = `${p}.__unlink__`
-      fs.copyFileSync(p, tmp)
-      fs.renameSync(tmp, p)
-      count += 1
+    const absTarget = path.resolve(bin, target)
+    // The target must live inside the payload (resources/agent-payload).
+    if (absTarget !== payloadRoot && !absTarget.startsWith(payloadRoot + path.sep)) {
+      throw new Error(
+        `venv/bin/${ent.name} -> ${target} points outside the payload (${absTarget}); ` +
+        'a bundled venv must never reference the build machine',
+      )
     }
+    const rel = path.relative(bin, absTarget)
+    // Already-relative or already-correct: skip.
+    if (target === rel) continue
+    fs.unlinkSync(p)
+    fs.symlinkSync(rel, p)
+    count += 1
   }
   return count
 }

@@ -4,10 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'vitest'
 
-import { findPackedPayload, materializePayloadLinks, stripFetchCache } from './materialize-payload-links.mjs'
+import { findPackedPayload, relativizePayloadLinks, stripFetchCache } from './materialize-payload-links.mjs'
 
 function tempRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-materialize-'))
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-relativize-'))
 }
 
 test('findPackedPayload locates the mac nested payload', () => {
@@ -24,7 +24,7 @@ test('findPackedPayload locates the mac nested payload', () => {
   }
 })
 
-test('materializePayloadLinks turns a symlink into an independent copy', () => {
+test('relativizePayloadLinks rewrites an absolute in-payload symlink to relative', () => {
   if (process.platform === 'win32') return
   const root = tempRoot()
   try {
@@ -35,21 +35,40 @@ test('materializePayloadLinks turns a symlink into an independent copy', () => {
     const real = path.join(store, 'python3.11')
     fs.writeFileSync(real, 'interpreter-bytes')
     const link = path.join(venv, 'python3')
+    // The absolute form uv --relocatable writes on POSIX.
     fs.symlinkSync(real, link)
     assert.equal(fs.lstatSync(link).isSymbolicLink(), true)
 
-    const n = materializePayloadLinks(root)
+    const n = relativizePayloadLinks(root)
     assert.equal(n, 1)
-    assert.equal(fs.lstatSync(link).isSymbolicLink(), false)
-    assert.equal(fs.readFileSync(link, 'utf8'), 'interpreter-bytes')
-    fs.writeFileSync(link, 'signed')
-    assert.equal(fs.readFileSync(real, 'utf8'), 'interpreter-bytes')
+    assert.equal(fs.lstatSync(link).isSymbolicLink(), true)
+    const target = fs.readlinkSync(link)
+    assert.equal(target.startsWith(path.sep), false) // now relative
+    assert.equal(path.resolve(venv, target), real)
+    assert.equal(fs.readFileSync(link, 'utf8'), 'interpreter-bytes') // resolves
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
 
-test('materializePayloadLinks splits a hardlinked pair', () => {
+test('relativizePayloadLinks throws when a symlink escapes the payload', () => {
+  if (process.platform === 'win32') return
+  const root = tempRoot()
+  try {
+    const outside = path.join(os.tmpdir(), `hermes-outside-${Date.now()}`)
+    fs.mkdirSync(outside, { recursive: true })
+    fs.writeFileSync(path.join(outside, 'python3.11'), 'x')
+    const venv = path.join(root, 'venv', 'bin')
+    fs.mkdirSync(venv, { recursive: true })
+    fs.symlinkSync(path.join(outside, 'python3.11'), path.join(venv, 'python3'))
+    assert.throws(() => relativizePayloadLinks(root), /outside the payload/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('relativizePayloadLinks leaves already-relative links alone', () => {
+  if (process.platform === 'win32') return
   const root = tempRoot()
   try {
     const store = path.join(root, 'tools', 'python', 'bin')
@@ -57,21 +76,12 @@ test('materializePayloadLinks splits a hardlinked pair', () => {
     fs.mkdirSync(store, { recursive: true })
     fs.mkdirSync(venv, { recursive: true })
     const real = path.join(store, 'python3.11')
-    const twin = path.join(venv, 'python3')
     fs.writeFileSync(real, 'interpreter-bytes')
-    try {
-      fs.linkSync(real, twin)
-    } catch (err) {
-      if (err && (err.code === 'EPERM' || err.code === 'ENOSYS')) return
-      throw err
-    }
-    assert.ok(fs.lstatSync(twin).nlink >= 2)
+    const link = path.join(venv, 'python3')
+    fs.symlinkSync(path.relative(venv, real), link)
 
-    const n = materializePayloadLinks(root)
-    assert.ok(n >= 1)
-    assert.equal(fs.lstatSync(twin).nlink, 1)
-    fs.writeFileSync(twin, 'signed')
-    assert.equal(fs.readFileSync(real, 'utf8'), 'interpreter-bytes')
+    assert.equal(relativizePayloadLinks(root), 0)
+    assert.equal(fs.readlinkSync(link), path.relative(venv, real))
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -112,7 +122,7 @@ test('stripFetchCache also drops leftover chromium store entries', () => {
   }
 })
 
-test('materializePayloadLinks does not flatten a framework file-symlink', () => {
+test('relativizePayloadLinks does not touch a framework file-symlink (not under venv/bin)', () => {
   if (process.platform === 'win32') return
   const root = tempRoot()
   try {
@@ -124,7 +134,7 @@ test('materializePayloadLinks does not flatten a framework file-symlink', () => 
     fs.symlinkSync(path.join('Versions', 'A', 'F'), link)
     assert.equal(fs.lstatSync(link).isSymbolicLink(), true)
 
-    assert.equal(materializePayloadLinks(root), 0)
+    assert.equal(relativizePayloadLinks(root), 0)
     assert.equal(fs.lstatSync(link).isSymbolicLink(), true)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
