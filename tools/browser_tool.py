@@ -3235,7 +3235,7 @@ def _discard_timed_out_browser_session(
         pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
         if os.path.isfile(pid_file):
             try:
-                daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+                daemon_pid = int(Path(pid_file).read_text(encoding="utf-8-sig").strip())
                 if not _verify_reapable_browser_daemon(daemon_pid, task_socket_dir, session_name):
                     return
                 # Tree-kill (#68139 / #85125 4c): the daemon spawns Chromium
@@ -3255,7 +3255,7 @@ def _read_browser_daemon_pid(task_socket_dir: str, session_name: str) -> Optiona
     """Read the agent-browser daemon PID for a session (best-effort)."""
     pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
     try:
-        return int(Path(pid_file).read_text(encoding="utf-8").strip())
+        return int(Path(pid_file).read_text(encoding="utf-8-sig").strip())
     except (OSError, ValueError):
         return None
 
