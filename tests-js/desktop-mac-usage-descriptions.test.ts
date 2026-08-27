@@ -91,8 +91,13 @@ function extendInfo(): Record<string, string> {
   // for NS*UsageDescription is string, but electron-builder's `extendInfo`
   // accepts arbitrary plist scalars (bool, number, array, object) and we want
   // a clean assertion error here, not a downstream `value.trim is not a
-  // function` crash in the whitespace test.
+  // function` crash in the whitespace test. Only the privacy usage keys must
+  // be strings; other plist scalars (LSRequiresNativeExecution, etc.) are
+  // legitimate booleans/numbers.
   for (const [key, value] of Object.entries(extend)) {
+    if (!key.startsWith('NS') || !key.endsWith('UsageDescription')) {
+      continue
+    }
     assert.equal(
       typeof value,
       'string',
@@ -191,6 +196,11 @@ test('every extendInfo value is free of leading/trailing whitespace and newlines
   const info = extendInfo()
 
   for (const [key, value] of Object.entries(info)) {
+    // Only string values carry whitespace concerns; plist scalars
+    // (booleans/numbers like LSRequiresNativeExecution) are exempt.
+    if (typeof value !== 'string') {
+      continue
+    }
     assert.equal(
       value,
       value.trim(),
