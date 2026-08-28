@@ -184,7 +184,7 @@ jobs:
             console.log(`builder=${eb}`)
           ' >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      - uses: actions/setup-node@v7.0.0 # immutable release. safe to pin.
         with:
           node-version: ${{ steps.pins.outputs.node }}
           cache: npm
