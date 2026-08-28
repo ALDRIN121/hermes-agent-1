@@ -67,6 +67,10 @@ class Package:
     on_path: bool = True
     url: str = ""
     gaps: dict[str, str] = {}
+    # Targets where this package's binary is the x64 build run under
+    # Windows ARM64 built-in emulation (no native arm64 artifact exists).
+    # The arch guard accepts the x64 PE on these targets.
+    emulated_arch_targets: frozenset[str] = frozenset()
 
     def missing_reason(self, target: str) -> Optional[str]:
         return self.gaps.get(target)

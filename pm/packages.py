@@ -455,6 +455,7 @@ class AgentBrowser(BinaryPackage):
     # No win32-arm64 gap: agent-browser ships only win32-x64, and Windows
     # ARM64 runs it via built-in emulation (its own postinstall falls back
     # to x64 on arm64). chromium is likewise the x64 build on win32-arm64.
+    emulated_arch_targets = frozenset({"win32-arm64"})
 
     def _rel(self, target: str) -> Optional[str]:
         ext = ".exe" if target.startswith("win32") else ""
@@ -464,6 +465,11 @@ class AgentBrowser(BinaryPackage):
         if target == "win32-arm64":
             target = "win32-x64"
         return f"bin/agent-browser-{target}{ext}"
+
+    def binary(self, entry: Path, target: str) -> Optional[Path]:
+        # The win32-arm64 payload carries the x64 binary (emulated), so
+        # resolve it under the win32-x64 name.
+        return super().binary(entry, "win32-x64" if target == "win32-arm64" else target)
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         flatten_single_dir(staged)

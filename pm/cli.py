@@ -137,7 +137,9 @@ def cmd_doctor(args) -> int:
         if binary is not None and binary.is_file():
             from pm.package import machine_matches_binary
 
-            if machine_matches_binary(binary, target) is False:
+            # x64 binary under Windows ARM64 emulation is fine when the
+            # package declares the target emulated.
+            if machine_matches_binary(binary, target) is False and target not in package.emulated_arch_targets:
                 print(f"✗ {name}: {binary.name} is not a {target} binary")
                 bad += 1
                 continue
@@ -346,7 +348,9 @@ def _arch_guard(store_dir: Path) -> list[str]:
         if binary is None or not binary.is_file():
             continue
         verdict = machine_matches_binary(binary, target)
-        if verdict is False:
+        # A package that declares this target as emulated (x64 binary run
+        # under Windows ARM64 built-in emulation) is fine with the x64 PE.
+        if verdict is False and target not in package.emulated_arch_targets:
             problems.append(f"{name}: {binary.name} is not a {target} binary")
     return problems
 
