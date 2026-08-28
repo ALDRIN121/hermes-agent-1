@@ -261,6 +261,29 @@ test('normalizeSshConfig rejects unsafe remote profile mappings', () => {
   })
 })
 
+test('normalizeSshConfig accepts a per-connection ready timeout override (#97264)', () => {
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: 180000 }), {
+    mode: 'ssh',
+    host: 'box',
+    readyTimeoutMs: 180000
+  })
+})
+
+test('normalizeSshConfig rejects invalid ready timeouts (#97264)', () => {
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: 0 }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: -5 }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: 'soon' }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+})
+
 test('normalizeSshConfig handles IPv6 and strict port bounds', () => {
   assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: '::1', port: 22 }), {
     mode: 'ssh',
