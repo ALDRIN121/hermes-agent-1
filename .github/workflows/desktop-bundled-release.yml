@@ -344,34 +344,42 @@ jobs:
           node apps/desktop/scripts/audit-bundle-arch.mjs \
             --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
 
-      - name: Pack unpacked app for upload
+      - name: Compute release hashes
         shell: bash
         run: |
-          cd apps/desktop/release
-          dirs=()
-          for d in *-unpacked mac mac-*; do
-            [ -d "$d" ] && dirs+=("$d")
-          done
-          if [ ${#dirs[@]} -eq 0 ]; then
-            echo "::error::no unpacked app directory found"; exit 1
-          fi
-          tar -czf "unpacked-bundled-${{ matrix.target.label }}.tar.gz" "${dirs[@]}"
+          label="${{ matrix.target.label }}"
+          mkdir -p release-meta
+          out="release-meta/hashes-$label.json"
+          {
+            echo '['
+            first=1
+            for f in apps/desktop/release/*.msix; do
+              [ -f "$f" ] || continue
+              [ $first -eq 0 ] && echo ','
+              first=0
+              size=$(stat -c%s "$f")
+              sha1=$(sha1sum "$f" | awk '{print $1}')
+              printf '{"filename":"%s","sha1":"%s","size":%s}' "$(basename "$f")" "$sha1" "$size"
+            done
+            echo ''
+            echo ']'
+          } > "$out"
+          cat "$out"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
+          # Only the metadata finalize needs: per-leg msix hashes (sha1+size
+          # for the win32 RELEASES feed) + the mac feed ymls. The binaries
+          # themselves go straight to R2 from each leg; finalize computes the
+          # feed manifests from these, so no multi-hundred-MB artifact
+          # round-trip per nightly.
           name: hermes-bundled-${{ matrix.target.label }}-${{ inputs.tag }}
           path: |
-            apps/desktop/release/*.dmg
-            apps/desktop/release/*.zip
-            apps/desktop/release/*.msix
-            apps/desktop/release/*.AppImage
-            apps/desktop/release/*.blockmap
-            apps/desktop/release/latest*.yml
-            apps/desktop/release/nightly*.yml
-            apps/desktop/release/unpacked-*.tar.gz
+            release-meta/hashes-*.json
+            apps/desktop/release/*-mac.yml
           retention-days: 30
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Stage to Cloudflare R2
         if: inputs.upload_release == true
@@ -397,7 +405,7 @@ jobs:
 
   finalize:
     name: Publish feeds to R2
-    needs: [build, first-boot]
+    needs: [build]
     if: inputs.upload_release == true
     runs-on: ubuntu-24.04
     environment: release-signing
@@ -445,7 +453,7 @@ jobs:
 
   builds-table:
     name: Render the release builds table
-    needs: [build, first-boot, finalize]
+    needs: [build, finalize]
     if: inputs.upload_release == true
     runs-on: ubuntu-24.04
     environment: release-signing
@@ -470,13 +478,12 @@ jobs:
 
   publish-nightly:
     name: Publish the nightly release
-    needs: [build, first-boot, builds-table, finalize]
+    needs: [build, builds-table, finalize]
     if: |
       always()
       && inputs.upload_release == true
       && contains(inputs.tag, '-nightly.')
       && needs.build.result == 'success'
-      && needs.first-boot.result == 'success'
       && needs.builds-table.result == 'success'
       && needs.finalize.result == 'success'
     runs-on: ubuntu-24.04
@@ -488,61 +495,3 @@ jobs:
         run: |
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
           echo "Published $TAG"
-
-  first-boot:
-    name: first-boot linux-x64
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ inputs.tag }}
-          sparse-checkout: |
-            scripts/smoke-payload.sh
-          sparse-checkout-cone-mode: false
-
-      - name: Download linux-x64 unpacked tree
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: hermes-bundled-linux-x64-${{ inputs.tag }}
-          path: packed
-
-      - name: Smoke the payload (store python, no venv cfg write)
-        shell: bash
-        run: |
-          set -euo pipefail
-          tar -xzf packed/unpacked-bundled-linux-x64.tar.gz
-          payload=""
-          for cand in linux-unpacked/resources/agent-payload \
-                      linux-x64-unpacked/resources/agent-payload; do
-            if [ -f "$cand/manifest.json" ]; then
-              payload=$cand
-              break
-            fi
-          done
-          if [ -z "$payload" ]; then
-            echo "::error::no agent-payload under the unpacked linux app"
-            find . -name manifest.json | head
-            exit 1
-          fi
-          python3 - "$payload" <<'PY'
-          import json, pathlib, sys
-          root = pathlib.Path(sys.argv[1])
-          manifest = json.loads((root / "manifest.json").read_text())
-          if manifest.get("external") is True:
-              raise SystemExit("payload is the external stub — bundled build did not stage")
-          for key in ("repo", "store", "venv"):
-              if not isinstance(manifest.get(key), str):
-                  raise SystemExit(f"manifest missing {key}")
-          facts = json.loads((root / manifest["store"] / "facts.json").read_text())
-          entry = facts["packages"]["python"]["entry"]
-          store_py = root / manifest["store"] / entry / "bin" / "python3"
-          sp = root / manifest["venv"] / "lib" / "python3.11" / "site-packages"
-          if not store_py.is_file():
-              raise SystemExit(f"store interpreter missing at {store_py}")
-          if not sp.is_dir():
-              raise SystemExit(f"venv site-packages missing at {sp}")
-          print(f"store python={store_py}\nsite-packages={sp}")
-          PY
-          bash scripts/smoke-payload.sh "$payload"

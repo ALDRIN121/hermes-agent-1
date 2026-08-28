@@ -365,8 +365,11 @@ async function cmdPut({ tag, key, file }) {
  *     absolute /releases/tag/<tag>/<file> locations (electron-updater
  *     resolves them with new URL(path, baseUrl)).
  *
- * Expects --dir to contain the merged artifacts for ONE tag:
- *   *.msix / *.msix.blockmap / *-mac.yml / *.dmg / *.zip
+ * Expects --dir to contain the merged METADATA for ONE tag (the build
+ * matrix uploads only this — the binaries go straight to R2 from each
+ * leg and are never round-tripped through artifacts):
+ *   hashes-<target>.json   per-leg [{filename, sha1, size}] for the msix
+ *   *-mac.yml              the per-leg electron-updater feed files
  */
 async function cmdFinalize({ tag, dir }) {
   const accountId = requiredEnv('CLOUDFLARE_R2_ACCOUNT_ID')
@@ -383,15 +386,22 @@ async function cmdFinalize({ tag, dir }) {
   const absKey = (filename) => `/${stagingKeyFor(tag, filename)}`
 
   // --- win32: RELEASES manifest only (msix stay under releases/tag/<tag>/) ---
-  const msixFiles = files.filter((f) => f.endsWith('.msix'))
-  if (msixFiles.length > 0) {
-    const packages = []
-    for (const f of msixFiles) {
-      const buf = fs.readFileSync(path.join(dir, f))
+  // The msix metadata (sha1+size) arrives in the per-leg hashes-*.json
+  // files the build matrix uploads — the binaries themselves go straight
+  // to R2 from each leg and are never round-tripped through artifacts.
+  const msixPackages = []
+  for (const hf of files.filter((f) => f.startsWith('hashes-') && f.endsWith('.json'))) {
+    const entries = JSON.parse(fs.readFileSync(path.join(dir, hf), 'utf8'))
+    msixPackages.push(...entries)
+  }
+  if (msixPackages.length > 0) {
+    const packages = msixPackages.map(({ filename, sha1, size }) => ({
+      sha1,
+      size,
       // The manifest's filename is the absolute object key; the client
       // resolves it against the feed host root.
-      packages.push({ sha1: createHash('sha1').update(buf).digest('hex'), size: buf.length, filename: absKey(f) })
-    }
+      filename: absKey(filename)
+    }))
     const winDir = feedDirFor('win32', channel)
     await putObject(creds, base, bucket, `${winDir}/RELEASES`, Buffer.from(renderReleases(packages), 'utf8'), now)
   }
