@@ -145,6 +145,17 @@ test('discord opus and pvporcupine multi-arch siblings are exempt', () => {
   }
 })
 
+test('the emulated x64 agent-browser exe is exempt in a win32-arm64 payload', () => {
+  for (const relPath of [
+    'resources/agent-payload/tools/agent-browser-0.35.1-win32-arm64/bin/agent-browser-win32-x64.exe',
+    'resources\\agent-payload\\tools\\agent-browser-0.26.0-win32-arm64\\bin\\agent-browser-win32-x64.exe'
+  ]) {
+    assert.equal(isExemptPath(relPath), true, relPath)
+  }
+  // A non-agent-browser x64 binary in the payload store still fails.
+  assert.equal(isExemptPath('resources/agent-payload/tools/something-1.0-win32-arm64/bin/thing.exe'), false)
+})
+
 test('a random payload binary is not exempt', () => {
   assert.equal(isExemptPath('resources/agent-payload/hermes-agent/something.exe'), false)
 })

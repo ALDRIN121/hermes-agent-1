@@ -199,6 +199,10 @@ const EXEMPT_PATTERNS = [
   /agent-payload[/\\]venv[/\\](Lib|lib[/\\]python[\d.]+)[/\\]site-packages[/\\]pvporcupine[/\\]lib[/\\]/i,
   // debugpy ships attach helpers for every OS/arch in one wheel.
   /agent-payload[/\\]venv[/\\](Lib|lib[/\\]python[\d.]+)[/\\]site-packages[/\\]debugpy[/\\]_vendored[/\\]pydevd[/\\]/i,
+  // agent-browser ships no native win-arm64 build; on win32-arm64 the
+  // payload stages the x64 exe, which Windows runs under built-in
+  // emulation (its own postinstall falls back to x64 on arm64).
+  /agent-payload[/\\]tools[/\\]agent-browser-[^/\\]+[/\\]bin[/\\]agent-browser-win32-x64\.exe$/i,
 ]
 
 export function isExemptPath(relPath) {
