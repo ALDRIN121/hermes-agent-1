@@ -458,6 +458,15 @@ function normalizeSshConfig(entry) {
     out.remoteProfile = remoteProfile
   }
 
+  // Slow remotes can need longer than the default for a cold `hermes serve`
+  // to announce its ready port (#97264). Positive integer milliseconds;
+  // anything else falls back to the default in remote-lifecycle.ts.
+  const readyTimeoutMs = Number(entry.readyTimeoutMs)
+
+  if (Number.isInteger(readyTimeoutMs) && readyTimeoutMs > 0) {
+    out.readyTimeoutMs = readyTimeoutMs
+  }
+
   return out
 }
 
