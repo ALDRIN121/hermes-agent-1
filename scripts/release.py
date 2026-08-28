@@ -2156,12 +2156,19 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     Called after the draft release exists — its body is where the
     builds-pending / builds-table jobs splice the download tables (the
     binaries themselves go to the R2 bucket; the release carries notes
-    only). --ref pins the workflow FILE version to the tag being
-    built, so an old tag rebuilds with the workflow it shipped with.
+    only). The workflow FILE is taken from the repo's DEFAULT BRANCH (not
+    the tag): a tag-dispatched run scopes actions/cache under
+    refs/heads/refs/tags/<tag> — a mangled per-tag scope that can never be
+    restored by a later nightly, so every nightly rebuilt from cold. On a
+    branch ref the caches scope to refs/heads/<branch> and persist across
+    nightlies. The build CODE still comes from the tag via the `tag` input
+    (the workflow checks out ${{ inputs.tag }}), so an old-tag rebuild
+    builds the old snapshot with the current workflow.
     """
+    dispatch_ref = _default_branch(gh_repo) or "main"
     cmd = [
         "gh", "workflow", "run", "desktop-bundled-release.yml",
-        "--ref", tag,
+        "--ref", dispatch_ref,
         "-f", f"tag={tag}",
         "-f", "upload_release=true",
     ]
@@ -2182,8 +2189,22 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
         print(f"    Start it manually: {' '.join(cmd)}")
         return False
 
-    print(f"  ✓ Desktop build started for {tag}")
+    print(f"  ✓ Desktop build started for {tag} (workflow from {dispatch_ref})")
     return True
+
+
+def _default_branch(gh_repo: str | None) -> str | None:
+    """The repo's default branch, resolved via gh. None on any failure."""
+    cmd = ["gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"]
+    if gh_repo:
+        cmd += ["--repo", gh_repo]
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", cwd=str(REPO_ROOT),
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
 def resolve_push_remote(requested: str | None) -> str:

@@ -184,7 +184,7 @@ jobs:
             console.log(`builder=${eb}`)
           ' >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: ${{ steps.pins.outputs.node }}
           cache: npm
@@ -220,10 +220,19 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Cache pm store
+        # Tag-dispatched runs (every nightly) scope actions/cache under the
+        # dispatch ref, which GitHub mangles to refs/heads/refs/tags/<tag> —
+        # a different scope per tag, so an exact key can never be restored
+        # by a later nightly. The content key below is stable across tags
+        # when pm/lock.json + uv.lock are unchanged; the restore-keys prefix
+        # (which ignores the tag entirely) rescues the previous nightly's
+        # store when the locks DID move.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/build/agent-payload/tools
           key: pm-store-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
+          restore-keys: |
+            pm-store-${{ matrix.target.label }}-
 
       - name: Cache electron + electron-builder toolchain
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -349,7 +358,7 @@ jobs:
           tar -czf "unpacked-bundled-${{ matrix.target.label }}.tar.gz" "${dirs[@]}"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hermes-bundled-${{ matrix.target.label }}-${{ inputs.tag }}
           path: |
