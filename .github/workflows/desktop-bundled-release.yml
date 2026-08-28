@@ -234,18 +234,37 @@ jobs:
           restore-keys: |
             pm-store-${{ matrix.target.label }}-
 
+      - name: Resolve electron's default download cache path
+        shell: bash
+        run: |
+          # @electron/get does NOT honor ELECTRON_CACHE/electron_config_cache:
+          # the electron-builder build's electron zip download uses the
+          # default env-paths cache root. It must be in the actions/cache
+          # path list or every build re-downloads electron (~115MB).
+          case "$RUNNER_OS" in
+            Windows) echo "ELECTRON_DEFAULT_CACHE=$LOCALAPPDATA/electron/Cache" >> "$GITHUB_ENV" ;;
+            macOS)   echo "ELECTRON_DEFAULT_CACHE=$HOME/Library/Caches/electron" >> "$GITHUB_ENV" ;;
+            *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
+          esac
+
       - name: Cache electron + electron-builder toolchain
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ github.workspace }}/.cache/electron-builder
             ${{ github.workspace }}/.cache/electron
-          key: eb-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
+            ${{ env.ELECTRON_DEFAULT_CACHE }}
+          # eb2: bumped from eb- (2026-08-28) — the old eb- caches never
+          # contained the electron zip (it lives in @electron/get's default
+          # cache root, which wasn't in the path list), so every build
+          # re-downloaded electron. The new key forces a fresh save that
+          # includes the default cache root.
+          key: eb2-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
           # An electron/builder bump misses the exact key, but the previous
           # dist is still mostly reusable (electron's postinstall skips the
           # download when dist/ exists) — restore it and let npm ci top up.
           restore-keys: |
-            eb-${{ runner.os }}-${{ runner.arch }}-
+            eb2-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache node_modules
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
