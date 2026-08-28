@@ -205,7 +205,7 @@ function writeMsixExtensions() {
     : `<uap5:Extension
     xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
     Category="windows.appExecutionAlias"
-    Executable="${['app', 'resources', 'agent-payload', 'venv', 'Scripts', 'hermes.exe'].join(String.fromCharCode(92))}"
+    Executable="${['app', 'resources', 'agent-payload', 'bin', 'hermes.exe'].join(String.fromCharCode(92))}"
     EntryPoint="Windows.FullTrustApplication">
   <uap5:AppExecutionAlias>
     <uap5:ExecutionAlias Alias="hermes.exe" />

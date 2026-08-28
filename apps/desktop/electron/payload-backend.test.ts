@@ -36,6 +36,13 @@ function writePayload(
     ? path.join(dir, 'venv', 'Lib', 'site-packages')
     : path.join(dir, 'venv', 'lib', 'python3.11', 'site-packages')
   fs.mkdirSync(sp, { recursive: true })
+
+  // The self-relative CLI shim + its sidecar (the bundled entry point).
+  const binDir = path.join(dir, 'bin')
+  fs.mkdirSync(binDir, { recursive: true })
+  fs.writeFileSync(path.join(binDir, isWindows ? 'hermes.exe' : 'hermes'), '')
+  fs.writeFileSync(path.join(binDir, 'shim-target.txt'), '../tools/python-3.11.16-win32-x64/python.exe\n')
+
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest))
   fs.writeFileSync(
     path.join(dir, 'tools', 'facts.json'),
@@ -73,6 +80,7 @@ test('resolvePayload finds a complete payload (store python + venv site-packages
   assert.equal(payload.repoDir, path.join(root, 'agent-payload', 'hermes-agent'))
   assert.ok(payload.storePython.endsWith(path.join('tools', 'python-3.11.16-win32-x64', 'python.exe')))
   assert.ok(payload.sitePackages.endsWith(path.join('venv', 'Lib', 'site-packages')))
+  assert.ok(payload.shim.endsWith(path.join('bin', 'hermes.exe')))
 })
 
 test('resolvePayload resolves the posix store python + site-packages layout', () => {
@@ -85,6 +93,7 @@ test('resolvePayload resolves the posix store python + site-packages layout', ()
   assert.ok(payload)
   assert.ok(payload.storePython.endsWith(path.join('tools', 'python-3.11.16-win32-x64', 'bin', 'python3')))
   assert.ok(payload.sitePackages.endsWith(path.join('venv', 'lib', 'python3.11', 'site-packages')))
+  assert.ok(payload.shim.endsWith(path.join('bin', 'hermes')))
 })
 
 test('resolvePayload returns null without a manifest, for external stubs, and for a broken payload', () => {

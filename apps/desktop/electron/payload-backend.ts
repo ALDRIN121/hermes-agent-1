@@ -29,6 +29,8 @@ export interface PayloadInfo {
   storePython: string
   /** The venv's site-packages (Lib/site-packages on win, lib/python3.11/site-packages on posix). */
   sitePackages: string
+  /** The self-relative CLI trampoline (bin/hermes(.exe)) — the bundled entry point. */
+  shim: string
 }
 
 export function resolvePayload(
@@ -71,6 +73,10 @@ export function resolvePayload(
   const repoDir = path.join(root, manifest.repo)
   const toolsDir = path.join(root, manifest.store)
   const venvDir = path.join(root, manifest.venv)
+  // The CLI trampoline staged into bin/ (hermes/hermes-agent/hermes-acp —
+  // build-bundled-desktop.mjs 5b). It execs the store python with the
+  // payload's own PYTHONPATH, so it is the single bundled entry point.
+  const shim = path.join(root, 'bin', deps.isWindows ? 'hermes.exe' : 'hermes')
 
   // The store CPython + the venv's site-packages. Bundled builds run the
   // STORE python (self-relative, no pyvenv.cfg write — works on read-only
@@ -92,11 +98,11 @@ export function resolvePayload(
     // fall through to the existence checks below
   }
 
-  if (!deps.directoryExists(repoDir) || !deps.fileExists(storePython) || !deps.directoryExists(sitePackages)) {
+  if (!deps.directoryExists(repoDir) || !deps.fileExists(storePython) || !deps.directoryExists(sitePackages) || !deps.fileExists(shim)) {
     return null
   }
 
-  return { root, repoDir, toolsDir, storePython, sitePackages }
+  return { root, repoDir, toolsDir, storePython, sitePackages, shim }
 }
 
 /**

@@ -19,6 +19,14 @@
 // binaries across targets whose python layout differs, and the sidecar
 // is data, not code — writing it breaks no signature.
 //
+// Import wiring: the bundled payload is sealed, so the python's own
+// site-packages has no working editable install of hermes-agent (the
+// `uv sync` editable pointer names the BUILD machine's payload path).
+// The shim therefore sets PYTHONPATH itself from the sidecar — the
+// payload repo + the venv site-packages — replacing any inherited
+// PYTHONPATH. Layout facts live in the sidecar (3 lines: interpreter,
+// site-packages, repo), so the shim stays byte-identical across targets.
+//
 // Zero crate dependencies on purpose (supply-chain surface of the ONE
 // binary every bundled install puts on PATH). The only unsafe is the
 // kernel32 SetConsoleCtrlHandler FFI on Windows.
@@ -58,16 +66,20 @@ fn program_basename(raw: &OsString) -> String {
         .unwrap_or_default()
 }
 
-/// Read the sidecar and resolve the interpreter path against the shim's
-/// own directory. Rejects absolute sidecar content: the whole point is
-/// relocatability, and an absolute path in the sidecar means a staging
-/// bug — failing loudly beats silently launching a foreign python.
-fn resolve_interpreter(shim_dir: &Path, sidecar_text: &str) -> Result<PathBuf, Error> {
-    let line = sidecar_text
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with('#'))
-        .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("{TARGET_FILE} is empty")))?;
+/// The payload layout facts the shim needs, all bin-relative (forward
+/// slashes in the sidecar on every platform, same convention as the
+/// payload manifest). Line order in shim-target.txt is fixed:
+///   1. interpreter — the payload CPython to exec
+///   2. site-packages — the venv's dependency tree (sealed payload has no
+///      working editable install; the shim points PYTHONPATH at it)
+///   3. repo — the payload source tree that owns hermes_cli
+struct Sidecar {
+    interpreter: PathBuf,
+    site_packages: PathBuf,
+    repo: PathBuf,
+}
+
+fn parse_relative(line: &str) -> Result<PathBuf, Error> {
     // Forward slashes in the sidecar on every platform (same convention
     // as the payload manifest); split and rejoin through the host paths.
     let rel = PathBuf::from_iter(line.split('/'));
@@ -77,7 +89,49 @@ fn resolve_interpreter(shim_dir: &Path, sidecar_text: &str) -> Result<PathBuf, E
             format!("{TARGET_FILE} must hold a relative path, got: {line}"),
         ));
     }
-    Ok(shim_dir.join(rel))
+    Ok(rel)
+}
+
+/// Read the sidecar and resolve the three payload layout facts against
+/// the shim's own directory. Rejects absolute sidecar content: the whole
+/// point is relocatability, and an absolute path in the sidecar means a
+/// staging bug — failing loudly beats silently launching a foreign python.
+fn read_sidecar(shim_dir: &Path) -> Result<Sidecar, Error> {
+    let text = std::fs::read_to_string(shim_dir.join(TARGET_FILE)).map_err(|e| {
+        Error::new(
+            e.kind(),
+            format!(
+                "cannot read {} (is this shim inside its bundle's bin directory?): {e}",
+                shim_dir.join(TARGET_FILE).display()
+            ),
+        )
+    })?;
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    if lines.len() != 3 {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "{TARGET_FILE} must hold exactly 3 lines (interpreter, site-packages, repo), got {}: {}",
+                lines.len(),
+                shim_dir.join(TARGET_FILE).display()
+            ),
+        ));
+    }
+    Ok(Sidecar {
+        interpreter: shim_dir.join(parse_relative(lines[0])?),
+        site_packages: shim_dir.join(parse_relative(lines[1])?),
+        repo: shim_dir.join(parse_relative(lines[2])?),
+    })
+}
+
+/// The PYTHONPATH the shim hands the payload python: repo first (its
+/// packages win over anything in site-packages), then the venv deps.
+fn compose_pythonpath(repo: &Path, site_packages: &Path, sep: &str) -> String {
+    format!("{}{sep}{}", repo.display(), site_packages.display())
 }
 
 /// The user-level pycache prefix: the sealed payload must never see
@@ -126,16 +180,8 @@ fn real_main() -> Result<ExitCode, Error> {
     let shim_dir = exe_real
         .parent()
         .ok_or_else(|| Error::new(ErrorKind::NotFound, "shim has no parent directory"))?;
-    let sidecar = std::fs::read_to_string(shim_dir.join(TARGET_FILE)).map_err(|e| {
-        Error::new(
-            e.kind(),
-            format!(
-                "cannot read {} (is this shim inside its bundle's bin directory?): {e}",
-                shim_dir.join(TARGET_FILE).display()
-            ),
-        )
-    })?;
-    let interpreter = resolve_interpreter(shim_dir, &sidecar)?;
+    let sidecar = read_sidecar(shim_dir)?;
+    let interpreter = &sidecar.interpreter;
     if !interpreter.is_file() {
         return Err(Error::new(
             ErrorKind::NotFound,
@@ -146,13 +192,23 @@ fn real_main() -> Result<ExitCode, Error> {
         ));
     }
 
-    let mut cmd = std::process::Command::new(&interpreter);
+    let mut cmd = std::process::Command::new(interpreter);
     cmd.arg("-m").arg(module).args(&rest);
     // Same hygiene as the POSIX wrappers: an inherited PYTHONPATH could
     // shadow bundled modules with foreign ones. PYTHONHOME would repoint
-    // the stdlib entirely.
+    // the stdlib entirely. The payload python has no working editable
+    // install (the venv's editable pointer names the build machine), so
+    // the shim supplies the payload's own import roots instead.
     cmd.env_remove("PYTHONPATH");
     cmd.env_remove("PYTHONHOME");
+    cmd.env(
+        "PYTHONPATH",
+        compose_pythonpath(
+            &sidecar.repo,
+            &sidecar.site_packages,
+            if cfg!(windows) { ";" } else { ":" },
+        ),
+    );
     if env::var_os("PYTHONPYCACHEPREFIX").is_none() {
         if let Some(dir) = default_pycache_dir() {
             cmd.env("PYTHONPYCACHEPREFIX", dir);
@@ -231,18 +287,108 @@ mod tests {
     }
 
     #[test]
-    fn resolve_interpreter_joins_relative_and_skips_comments() {
-        let dir = Path::new("/payload/bin");
-        let got = resolve_interpreter(dir, "# comment\n\n../python/cpython-3.11/bin/python3\n").unwrap();
-        assert_eq!(got, dir.join("..").join("python").join("cpython-3.11").join("bin").join("python3"));
+    fn read_sidecar_parses_three_relative_lines_and_joins_them() {
+        let dir = unique_test_dir();
+        std::fs::write(
+            dir.join(TARGET_FILE),
+            "../tools/cpython-3.11.15/python.exe\n../venv/Lib/site-packages\n../hermes-agent\n",
+        )
+        .unwrap();
+        let sidecar = read_sidecar(&dir).unwrap();
+        assert_eq!(
+            sidecar.interpreter,
+            dir.join("..").join("tools").join("cpython-3.11.15").join("python.exe")
+        );
+        assert_eq!(
+            sidecar.site_packages,
+            dir.join("..").join("venv").join("Lib").join("site-packages")
+        );
+        assert_eq!(sidecar.repo, dir.join("..").join("hermes-agent"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn resolve_interpreter_rejects_empty_and_absolute() {
-        let dir = Path::new("/payload/bin");
-        assert!(resolve_interpreter(dir, "").is_err());
-        assert!(resolve_interpreter(dir, "# only comments\n").is_err());
-        assert!(resolve_interpreter(dir, "/abs/python").is_err());
-        assert!(resolve_interpreter(dir, "C:/abs/python.exe").is_err());
+    fn read_sidecar_skips_comments_and_blank_lines() {
+        let dir = unique_test_dir();
+        std::fs::write(
+            dir.join(TARGET_FILE),
+            "# comment\n\n../tools/cpython-3.11.15/python.exe\n../venv/Lib/site-packages\n../hermes-agent\n",
+        )
+        .unwrap();
+        let sidecar = read_sidecar(&dir).unwrap();
+        assert_eq!(
+            sidecar.interpreter,
+            dir.join("..").join("tools").join("cpython-3.11.15").join("python.exe")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn read_sidecar_rejects_wrong_line_counts() {
+        let dir = unique_test_dir();
+        std::fs::write(dir.join(TARGET_FILE), "../tools/python.exe\n").unwrap();
+        assert!(read_sidecar(&dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let dir = unique_test_dir();
+        std::fs::write(
+            dir.join(TARGET_FILE),
+            "../tools/python.exe\n../venv/Lib/site-packages\n../hermes-agent\nextra\n",
+        )
+        .unwrap();
+        assert!(read_sidecar(&dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn read_sidecar_rejects_empty_and_absolute_lines() {
+        let dir = unique_test_dir();
+        std::fs::write(dir.join(TARGET_FILE), "# only comments\n").unwrap();
+        assert!(read_sidecar(&dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let dir = unique_test_dir();
+        std::fs::write(
+            dir.join(TARGET_FILE),
+            "/abs/python\n../venv/Lib/site-packages\n../hermes-agent\n",
+        )
+        .unwrap();
+        assert!(read_sidecar(&dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let dir = unique_test_dir();
+        std::fs::write(
+            dir.join(TARGET_FILE),
+            "../tools/python.exe\nC:/venv/Lib/site-packages\n../hermes-agent\n",
+        )
+        .unwrap();
+        assert!(read_sidecar(&dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn compose_pythonpath_orders_repo_before_site_packages() {
+        let repo = Path::new("/payload/hermes-agent");
+        let sp = Path::new("/payload/venv/Lib/site-packages");
+        assert_eq!(
+            compose_pythonpath(repo, sp, ";"),
+            "/payload/hermes-agent;/payload/venv/Lib/site-packages"
+        );
+        assert_eq!(
+            compose_pythonpath(repo, sp, ":"),
+            "/payload/hermes-agent:/payload/venv/Lib/site-packages"
+        );
+    }
+
+    fn unique_test_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-shim-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

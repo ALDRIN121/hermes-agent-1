@@ -282,12 +282,14 @@ if (process.platform === 'darwin') {
 // (hermes / hermes-agent / hermes-acp), not the venv console-script shims:
 // a bundled artifact is sealed + signed, so the distlib launchers (which
 // assemble at install time with an absolute interpreter path) can never
-// exist there. The shim reads bin/shim-target.txt (bin-relative payload
-// CPython path, forward slashes) and execs `python -m <module>`, so it is
-// fully self-relative and works on read-only installs (MSIX) with no venv
-// cfg write. The venv is still created by pm bundle but bundled builds do
-// NOT use it.
-function stageCliShims(outDir, pythonRelPath) {
+// exist there. The shim reads bin/shim-target.txt (3 bin-relative lines,
+// forward slashes: interpreter, venv site-packages, repo) and execs
+// `python -m <module>` with PYTHONPATH set to repo + site-packages, so it
+// is fully self-relative, finds hermes_cli + deps on ANY machine (the venv's
+// editable install names the BUILD machine's path), and works on read-only
+// installs (MSIX) with no venv cfg write. The venv is still created by pm
+// bundle but bundled builds run its site-packages only.
+function stageCliShims(outDir, sidecarLines) {
   const shimCrate = path.join(REPO_ROOT, 'apps', 'desktop', 'shim')
   run('cargo', ['build', '--release', '--quiet'], { cwd: shimCrate })
   const suffix = process.platform === 'win32' ? '.exe' : ''
@@ -303,13 +305,16 @@ function stageCliShims(outDir, pythonRelPath) {
     fs.copyFileSync(built, path.join(binDir, name))
     fs.chmodSync(path.join(binDir, name), 0o755)
   }
-  // Sidecar: bin-relative path to the payload CPython, forward slashes.
-  const rel = `../${pythonRelPath.split(path.sep).join('/')}`
-  if (path.isAbsolute(rel) || rel.includes('\\')) {
-    fail(`shim sidecar needs a forward-slash payload-relative python path, got: ${rel}`)
+  // Sidecar: bin-relative payload paths, forward slashes. Every line must
+  // be relative — an absolute path means a layout bug (and would break the
+  // relocatability contract the shim exists for).
+  for (const line of sidecarLines) {
+    if (path.isAbsolute(line) || line.includes('\\')) {
+      fail(`shim sidecar needs forward-slash payload-relative paths, got: ${line}`)
+    }
   }
-  fs.writeFileSync(path.join(binDir, 'shim-target.txt'), `${rel}\n`)
-  console.log(`[build-bundled] staged CLI shims (${names.join(', ')}) → ${binDir} (target ${rel})`)
+  fs.writeFileSync(path.join(binDir, 'shim-target.txt'), `${sidecarLines.join('\n')}\n`)
+  console.log(`[build-bundled] staged CLI shims (${names.join(', ')}) → ${binDir} (${sidecarLines.join(', ')})`)
 }
 
 const pythonEntry = (() => {
@@ -326,7 +331,29 @@ if (!pythonEntry) {
 // The shim's python is the store interpreter (platform layout: bin/python3
 // on posix, python.exe on win32).
 const pythonShimTarget = path.join('tools', pythonEntry, process.platform === 'win32' ? 'python.exe' : 'bin', process.platform === 'win32' ? '' : 'python3')
-stageCliShims(PAYLOAD_DIR, pythonShimTarget.replace(/\\/g, '/').replace(/\/+$/, ''))
+  .replace(/\\/g, '/')
+  .replace(/\/+$/, '')
+// The venv site-packages hold the dependency tree (uv sync). POSIX nests
+// under lib/python3.X/, so the version comes from the staged interpreter's
+// entry name (cpython-3.11.15-... -> 3.11).
+const pyMinorFromEntry = /^cpython-(\d+\.\d+)/.exec(pythonEntry)?.[1]
+if (!pyMinorFromEntry) {
+  fail(`cannot derive python minor version from entry ${pythonEntry} — cannot stage the CLI shims`)
+}
+const venvSitePackages = process.platform === 'win32'
+  ? '../venv/Lib/site-packages'
+  : `../venv/lib/python${pyMinorFromEntry}/site-packages`
+// The repo snapshot dir name comes from the payload manifest (pm bundle
+// writes repo: "hermes-agent").
+const payloadManifest = JSON.parse(fs.readFileSync(path.join(PAYLOAD_DIR, 'manifest.json'), 'utf8'))
+if (typeof payloadManifest.repo !== 'string') {
+  fail('payload manifest.json has no repo field — cannot stage the CLI shims')
+}
+stageCliShims(PAYLOAD_DIR, [
+  `../${pythonShimTarget}`,
+  venvSitePackages,
+  `../${payloadManifest.repo}`
+])
 
 // ── 6. desktop build + package ──────────────────────────────────────────────
 

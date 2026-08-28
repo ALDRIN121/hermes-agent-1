@@ -44,9 +44,10 @@ const config = require(path.join(desktop, "electron-builder.config.cjs"))
 const pkg = require(path.join(desktop, "package.json"))
 
 const options = config.msix
-// The payload venv shim (hermes.exe) is the MSIX entry point; the alias
-// and AppExtension fragments in the config reference the same path.
-const executable = `app\\resources\\agent-payload\\venv\\Scripts\\hermes.exe`
+// The payload CLI shim (hermes.exe) is the MSIX entry point; the alias
+// and AppExtension fragments in the config reference the same path. The
+// shim is self-relative and sets the payload's own PYTHONPATH.
+const executable = `app\\resources\\agent-payload\\bin\\hermes.exe`
 const displayName = options.displayName || config.productName
 // appInfo.name honours extraMetadata.name the way packager merging does.
 const appInfoName = config.extraMetadata?.name || pkg.name
