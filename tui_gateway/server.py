@@ -17289,6 +17289,7 @@ from . import (  # noqa: E402
     methods_prompt as _methods_prompt,
     methods_session as _methods_session,
     methods_tools as _methods_tools,
+    methods_vault as _methods_vault,
 )
 
 for _m in (
@@ -17301,6 +17302,7 @@ for _m in (
     _methods_profiles,
     _methods_images,
     _methods_bot_relay,
+    _methods_vault,
 ):
     _m.register(sys.modules[__name__])
 del _m
