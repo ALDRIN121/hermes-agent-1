@@ -452,12 +452,17 @@ class AgentBrowser(BinaryPackage):
     flatten = True
     probe_version = False
     url = "https://registry.npmjs.org/agent-browser/-/agent-browser-{version}.tgz"
-    gaps = {
-        "win32-arm64": "agent-browser ships no win32-arm64 binary",
-    }
+    # No win32-arm64 gap: agent-browser ships only win32-x64, and Windows
+    # ARM64 runs it via built-in emulation (its own postinstall falls back
+    # to x64 on arm64). chromium is likewise the x64 build on win32-arm64.
 
     def _rel(self, target: str) -> Optional[str]:
         ext = ".exe" if target.startswith("win32") else ""
+        # Windows ARM64 runs the x64 binary under built-in emulation:
+        # agent-browser ships no native arm64 build (its own postinstall
+        # falls back to x64 on arm64), so the staged name is win32-x64.
+        if target == "win32-arm64":
+            target = "win32-x64"
         return f"bin/agent-browser-{target}{ext}"
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
@@ -491,11 +496,15 @@ class PlaywrightBrowser(Package):
 
     # Chrome-for-Testing platform names; targets absent here fall back to
     # playwright's dbazure mirror with its own platform names.
+    # win32-arm64 uses the win64 (x64) build: CfT publishes no native
+    # win-arm64 chromium, and Windows ARM64 runs x64 binaries via built-in
+    # emulation — the same choice agent-browser's own postinstall makes.
     _CFT = {
         "linux-x64": "linux64",
         "darwin-x64": "mac-x64",
         "darwin-arm64": "mac-arm64",
         "win32-x64": "win64",
+        "win32-arm64": "win64",
     }
     _MIRROR = {"linux-arm64": "linux-arm64"}
     _FILE = ""  # "chrome" / "chrome-headless-shell"
@@ -529,7 +538,6 @@ class PlaywrightBrowser(Package):
 @register
 class Chromium(PlaywrightBrowser):
     name = "chromium"
-    gaps = {"win32-arm64": "playwright publishes no win-arm64 chromium build"}
     _FILE = "chrome"
     _MIRROR_FILE = "chromium"
 
@@ -537,7 +545,6 @@ class Chromium(PlaywrightBrowser):
 @register
 class ChromiumHeadlessShell(PlaywrightBrowser):
     name = "chromium-headless-shell"
-    gaps = Chromium.gaps
     _FILE = "chrome-headless-shell"
     _MIRROR_FILE = "chromium-headless-shell"
 

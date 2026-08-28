@@ -27,6 +27,10 @@
           "sha256": "b5e3195041af345a668d110f5daf5581961fa3608626ea588c97dd0fe81c4e38",
           "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/linux64/chrome-linux64.zip"
         },
+        "win32-arm64": {
+          "sha256": "08476e6fe550ccbc0d11d1ab030292fc4e32d4987400c77b2d1905a6bd13b4f6",
+          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/win64/chrome-win64.zip"
+        },
         "win32-x64": {
           "sha256": "08476e6fe550ccbc0d11d1ab030292fc4e32d4987400c77b2d1905a6bd13b4f6",
           "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/win64/chrome-win64.zip"
@@ -51,6 +55,10 @@
         "linux-x64": {
           "sha256": "2536e97d8f410df0394b3e7c4252e88ce9f239f04f3af4e247a26caf45baf49e",
           "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/linux64/chrome-headless-shell-linux64.zip"
+        },
+        "win32-arm64": {
+          "sha256": "839500db9e1b0865961ce8b05134ba3d3d71b82be5dec236d6c87ecd93e082cd",
+          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/win64/chrome-headless-shell-win64.zip"
         },
         "win32-x64": {
           "sha256": "839500db9e1b0865961ce8b05134ba3d3d71b82be5dec236d6c87ecd93e082cd",

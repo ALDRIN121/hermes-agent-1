@@ -652,8 +652,8 @@ def test_facts_drop_forgets_one_package(tmp_path):
     assert facts.drop("chromium") is False
 
 
-def test_bundle_package_names_skip_chromium(monkeypatch, tmp_path):
-    from pm.cli import _PAYLOAD_SKIP, _bundle_package_names
+def test_bundle_package_names_include_browsers(monkeypatch, tmp_path):
+    from pm.cli import _bundle_package_names
     from pm.lock import Lockfile
 
     lock = Lockfile(tmp_path / "lock.json")
@@ -662,9 +662,12 @@ def test_bundle_package_names_skip_chromium(monkeypatch, tmp_path):
     lock.save()
     monkeypatch.setattr("pm.cli._lockfile", lambda: lock)
     names = _bundle_package_names()
+    # Browsers now ship in every payload (win32-arm64 runs the x64 build
+    # under emulation); nothing is excluded from the bundle.
+    assert "chromium" in names
+    assert "chromium-headless-shell" in names
     assert "python" in names
     assert "ripgrep" in names
-    assert not (_PAYLOAD_SKIP & set(names))
 
 
 def test_drop_unloadable_runtime_files_removes_only_arm64_x64_vc_runtime(monkeypatch, tmp_path):
