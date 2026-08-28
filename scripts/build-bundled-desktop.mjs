@@ -335,8 +335,10 @@ const pythonShimTarget = path.join('tools', pythonEntry, process.platform === 'w
   .replace(/\/+$/, '')
 // The venv site-packages hold the dependency tree (uv sync). POSIX nests
 // under lib/python3.X/, so the version comes from the staged interpreter's
-// entry name (cpython-3.11.15-... -> 3.11).
-const pyMinorFromEntry = /^cpython-(\d+\.\d+)/.exec(pythonEntry)?.[1]
+// entry name. The entry prefix varies by target (cpython-3.11.15-... on
+// win32/linux, python-3.11.16+... on darwin) — grab the first dotted
+// numeric pair, which is the python version in every shape.
+const pyMinorFromEntry = pythonEntry.match(/\d+\.\d+/)?.[0]
 if (!pyMinorFromEntry) {
   fail(`cannot derive python minor version from entry ${pythonEntry} — cannot stage the CLI shims`)
 }
