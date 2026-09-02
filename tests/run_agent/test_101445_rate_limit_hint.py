@@ -205,3 +205,110 @@ class TestTerminal429ResponseCarriesHint:
         assert "Rate limit hit on a paid model" not in final
         assert "This looks like a `:free`-tier rate limit" not in final
         assert result["failure_reason"] not in ("rate_limit", "upstream_rate_limit")
+
+
+class TestStreamingWorker429Path:
+    """#101445 follow-up (dimkin-eu report): a 429 raised inside the streaming
+    worker (``interruptible_streaming_api_call`` → ``chat_completion_helpers``
+    sets ``result["error"]``, which the wrapper re-raises) must still reach the
+    terminal branch with the rate-limit hint — the worker channel is a
+    different *call site*, not a different classifier verdict.
+
+    The reporter hit exactly this shape: ``Streaming failed before delivery:
+    ... HTTP 429: Provider returned error`` rendered bare on stock main.  These
+    tests force ``_use_streaming`` on and raise the 429 from the streaming
+    entry point, then assert the hint is emitted through the same terminal
+    branch the non-streaming path uses.
+    """
+
+    def _stream_agent(self, model: str) -> AIAgent:
+        agent = _make_agent(model)
+        # Streaming is decided per-call: no stream consumers + Mock client
+        # would flip _use_streaming off. Claim a consumer so the loop routes
+        # every attempt through _interruptible_streaming_api_call.
+        agent._has_stream_consumers = lambda: True
+        agent._disable_streaming = False
+        return agent
+
+    @pytest.mark.parametrize(
+        ("model", "expected_marker", "forbidden_marker"),
+        [
+            (
+                "minimax/minimax-m3:free",
+                "This looks like a `:free`-tier rate limit",
+                "Rate limit hit on a paid model",
+            ),
+            (
+                "glm-5.1",
+                "Rate limit hit on a paid model",
+                "This looks like a `:free`-tier rate limit",
+            ),
+        ],
+    )
+    def test_streaming_429_still_emits_hint(self, model, expected_marker, forbidden_marker):
+        agent = self._stream_agent(model)
+
+        with (
+            # Streaming worker channel: chat_completion_helpers stores the
+            # worker error in result["error"]; interruptible_streaming_api_call
+            # re-raises it. Raising from the entry point models the same
+            # propagation into the main retry loop.
+            patch.object(
+                agent, "_interruptible_streaming_api_call",
+                side_effect=RateLimitError(),
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_dump_api_request_debug"),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.agent_runtime_helpers.time.sleep"),
+            patch(
+                "agent.conversation_loop.adaptive_rate_limit_backoff",
+                return_value=(0.0, None),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        ):
+            result = agent.run_conversation("hello")
+
+        final = result["final_response"]
+        assert final.startswith("API call failed after 2 retries: ")
+        assert expected_marker in final
+        assert forbidden_marker not in final
+        assert result["failure_reason"] in ("rate_limit", "upstream_rate_limit")
+
+    def test_streaming_non_429_has_no_hint(self):
+        """Control through the streaming channel: a 500-class failure stays bare."""
+        agent = self._stream_agent("glm-5.1")
+
+        with (
+            patch.object(
+                agent, "_interruptible_streaming_api_call",
+                side_effect=ServerError(),
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_dump_api_request_debug"),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.agent_runtime_helpers.time.sleep"),
+            patch(
+                "agent.conversation_loop.adaptive_rate_limit_backoff",
+                return_value=(0.0, None),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        ):
+            result = agent.run_conversation("hello")
+
+        final = result["final_response"]
+        assert final.startswith("API call failed after 2 retries: ")
+        assert "Rate limit hit on a paid model" not in final
+        assert "This looks like a `:free`-tier rate limit" not in final
