@@ -412,6 +412,16 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('$connection 的读者')
   })
 
+  it('escapes a span whose body is fullwidth punctuation plus Latin (#103546)', () => {
+    // Fullwidth punctuation (（） ， ：) is near-universal in CJK prose; a
+    // `$foo（bar）$`-style span whose body is only fullwidth punctuation plus
+    // Latin (no Han/Hangul glyph) must still classify as prose, not math.
+    const output = preprocessMarkdown('值 $foo（bar）$ 已确认')
+
+    expect(output).toContain('\\$foo（bar）$')
+    expect(output).toContain('值 \\$foo')
+  })
+
   it('leaves real inline math in CJK prose untouched', () => {
     const output = preprocessMarkdown('代入 $x^2 + y^2$ 得到结果')
 

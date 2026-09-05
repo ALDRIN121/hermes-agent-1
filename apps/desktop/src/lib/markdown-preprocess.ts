@@ -342,10 +342,13 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
   return out + text.slice(copiedThrough)
 }
 
-// East Asian script ranges (Han, Hiragana, Katakana, Hangul, and the
-// halfwidth/fullwidth kana blocks). A single-dollar span whose body contains
-// any of these is prose, not TeX — see #103546.
-const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\uff66-\uff9f]/u
+// East Asian script ranges: CJK Symbols/Punctuation and Fullwidth Forms,
+// Han, Hiragana, Katakana, Hangul, and the halfwidth/fullwidth kana blocks.
+// A single-dollar span whose body contains any of these is prose, not TeX —
+// see #103546. Fullwidth punctuation (（） ， ：) is near-universal in CJK
+// prose and is included so a `$foo（bar）$`-style span with no Han/Hangul
+// glyph in its body still classifies as prose rather than math.
+const CJK_RE = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\uff00-\uffef]/u
 
 /**
  * Escape the opening `$` of a single-dollar span whose body contains CJK
@@ -366,6 +369,13 @@ const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7
  * on the same line (`$x^2$`, `$\alpha = 1$`) is unaffected because its body
  * has no CJK. Display math `$$…$$` is untouched (`findClosingSingleDollar`
  * skips `$$` runs, so its opener is never treated as an inline candidate).
+ *
+ * Tradeoff (accepted): real inline math whose body happens to contain CJK
+ * — e.g. `$x = 变量$`, common in Chinese-language math writing — is treated
+ * as prose and escapes instead of rendering through KaTeX. That is the safer
+ * default for an assistant chat surface: false-positive prose-as-math breaks
+ * copy-out (per-character math-italic codepoints) and renders CJK in a serif
+ * fallback face, while prose-as-literal only loses a single equation.
  */
 function escapeCjkProseDollars(text: string): string {
   let out = ''
